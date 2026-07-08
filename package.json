@@ -8,7 +8,7 @@
     ".": "./src/index.mjs"
   },
   "bin": {
-    "libby": "./bin/libby.mjs"
+    "libby": "bin/libby.mjs"
   },
   "files": [
     "bin",
