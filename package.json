@@ -1,0 +1,48 @@
+{
+  "name": "libby-archiver",
+  "version": "0.1.0",
+  "description": "Browser-free Node.js library + CLI to archive your Libby / OverDrive audiobook loans — raw MP3 spine parts plus full metadata sidecars, no re-encoding.",
+  "type": "module",
+  "main": "./src/index.mjs",
+  "exports": {
+    ".": "./src/index.mjs"
+  },
+  "bin": {
+    "libby": "./bin/libby.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "config.example.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "start": "node bin/libby.mjs",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "libby",
+    "overdrive",
+    "audiobook",
+    "archive",
+    "download",
+    "mp3",
+    "ebook",
+    "library",
+    "cli"
+  ],
+  "author": "JavaGT <java@javagrant.com>",
+  "license": "MIT",
+  "homepage": "https://github.com/JavaGT/libby-archiver#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JavaGT/libby-archiver.git"
+  },
+  "bugs": {
+    "url": "https://github.com/JavaGT/libby-archiver/issues"
+  }
+}

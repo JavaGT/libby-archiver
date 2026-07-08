@@ -1,0 +1,21 @@
+# Personal / secret — never commit
+config.json
+.libby-session.json
+.libby-*.json
+.libby-*.txt
+session.json
+
+# Archived audiobooks (your own downloaded loans)
+archive/
+*.mp3
+
+# Node
+node_modules/
+npm-debug.log*
+.npm/
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/

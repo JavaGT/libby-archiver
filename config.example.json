@@ -1,0 +1,9 @@
+{
+  "library": "your-library",
+  "libraryName": "Your Library",
+  "websiteId": "123",
+  "cardNumber": "YOUR_CARD_NUMBER",
+  "pin": "",
+  "out": "./archive",
+  "insecureTLS": false
+}
