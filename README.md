@@ -1,5 +1,9 @@
 # libby-archiver
 
+[![npm](https://img.shields.io/npm/v/libby-archiver.svg)](https://www.npmjs.com/package/libby-archiver)
+[![node](https://img.shields.io/node/v/libby-archiver.svg)](https://nodejs.org)
+[![license](https://img.shields.io/npm/l/libby-archiver.svg)](LICENSE)
+
 Browser-free **Node.js library + CLI** to archive the **Libby / OverDrive audiobooks you
 have on loan**. It downloads the **raw MP3 spine parts exactly as OverDrive serves them**
 (no re-encoding) alongside rich metadata sidecars — cover art, chapters, narrators, ISBNs,
@@ -129,6 +133,30 @@ and `SentryError` primitives. See [`src/index.mjs`](src/index.mjs).
 - **Obfuscation drift.** The `window.eData` decode is tied to bifocal's current scramble. If a
   future OverDrive update changes it, `descramble()` in `src/openbook.mjs` is the one function
   to revisit.
+
+## Credits & prior art
+
+This project stands on the shoulders of
+[**PsychedelicPalimpsest/LibbyRip**](https://github.com/PsychedelicPalimpsest/LibbyRip) — the
+Tampermonkey userscript that first mapped out Libby's internals and the `window.eData` /
+openbook mechanics. libby-archiver is an independent, from-scratch **pure-Node, browser-free
+reimplementation** rather than a port, but the reverse-engineering groundwork traces back to
+that project and its docs. Thanks also to the [`odmpy`](https://github.com/ping/odmpy) project
+for prior art on the headless OverDrive flow.
+
+## Legal & ethical use
+
+This tool archives audiobooks **you have legitimately borrowed** through your own library card,
+for personal safekeeping and offline listening. It does **not** borrow titles, bypass lending
+limits, crack DRM, or grant access to anything you couldn't already play in the Libby app.
+Don't redistribute what you download. Respect your library's terms and your local copyright
+law — you are responsible for how you use it.
+
+## Contributing
+
+Issues and PRs welcome. The most likely thing to break is the `window.eData` decode if
+OverDrive changes its obfuscation — see the **Obfuscation drift** caveat above for where to
+look. Please don't file issues asking for help pirating; this is for archiving your own loans.
 
 ## License
 
