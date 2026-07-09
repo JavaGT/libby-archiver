@@ -13,7 +13,7 @@
 //      which is what the browser uses. We therefore bootstrap our own primary via
 //      auth/link, mint a sync code from it, and clone it into a second chip.
 //
-// The whole thing needs only a library card number (Your cards have no PIN).
+// The whole thing needs only a library card number (many library cards have no PIN).
 //
 // A successful session (the final re-minted identity + cardId) is cached to disk so
 // subsequent runs skip the bootstrap until the token expires.

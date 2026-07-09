@@ -11,7 +11,7 @@
 // Config resolution: flags > env > local ./config.json > ~/.config/libby-archiver/config.json
 //   --card <n>      library card number      (env LIBBY_CARD)
 //   --pin <n>       card PIN, if any         (env LIBBY_PIN)
-//   --library <k>   library key, e.g your-library(env LIBBY_LIBRARY)
+//   --library <k>   library key, e.g your-library (env LIBBY_LIBRARY)
 //   --website <id>  website id, e.g. 123     (env LIBBY_WEBSITE)
 //   --out <dir>     output directory         (env LIBBY_OUT)   default ./archive
 //   --session <f>   session cache file

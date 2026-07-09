@@ -75,8 +75,9 @@ then `~/.config/libby-archiver/config.json`.
 
 ## Your library key
 
-The key is the slug in your Libby URL — `your-library` in `libbyapp.com/library/your-library`, or the
-value in your library's share links. `init` resolves it to the full name and `websiteId`
+The key is the slug in your Libby URL — e.g. `your-library` in
+`libbyapp.com/library/your-library`, or the value in your library's share links. `init`
+resolves it to the full name and `websiteId`
 against OverDrive's public catalog, so the slug is all you need to supply.
 
 ## Using it as a library
