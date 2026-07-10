@@ -4,23 +4,25 @@
 [![node](https://img.shields.io/node/v/libby-archiver.svg)](https://nodejs.org)
 [![license](https://img.shields.io/npm/l/libby-archiver.svg)](LICENSE)
 
-A Node.js library and CLI for archiving Libby/OverDrive audiobooks you have on loan. It
-downloads the MP3 spine parts as OverDrive serves them (no re-encoding) and writes the
-metadata alongside: cover art, chapters, narrators, ISBNs, and a checksum manifest.
+A Node.js library and CLI for Libby/OverDrive audiobooks. It searches the catalog, borrows
+and returns titles, places holds, and archives the audiobooks you have on loan — downloading
+the MP3 spine parts as OverDrive serves them (no re-encoding) and writing the metadata
+alongside: cover art, chapters, narrators, ISBNs, and a checksum manifest.
 
 It runs headless — no browser, no Selenium — and has no dependencies beyond Node itself.
 
-You need to have the audiobook checked out already. This doesn't borrow titles, get around
-lending limits, or strip DRM; it saves a copy of something you can already play in the app.
+Everything happens through your own library card. It doesn't get around lending limits or
+strip DRM; archiving saves a copy of something you can already play in the app.
 
 ## Quickstart
 
 ```bash
 npm install -g libby-archiver
 
-libby init            # one-time setup (library + card)
-libby list            # show your current audiobook loans
-libby archive --all   # download them
+libby init                    # one-time setup (library + card)
+libby search sci-fi thriller  # find something to borrow
+libby borrow 10510729         # check it out (id from search)
+libby archive --all           # download your loans
 ```
 
 `libby init` looks up your library from its Libby key, checks your card works, and writes
@@ -54,12 +56,30 @@ Each audiobook gets its own folder:
 
 ```
 libby init                     setup — run this first
+libby search <terms>           search your library's catalog
+libby borrow <id>              check out a title (id from search)
+libby return <id>              return a loan early
+libby hold <id>                place a hold on an unavailable title
+libby unhold <id>              cancel a hold
 libby list                     list your current audiobook loans
 libby archive --all            archive every audiobook loan
-libby archive --title <id>     archive one title (id comes from `libby list`)
+libby archive --title <id>     archive one title (id from `libby list`)
 libby auth                     check authentication only
 libby where                    print config + session file paths
 libby help                     usage
+```
+
+`search`, `borrow`, `return`, and `hold` cover the full loan lifecycle without opening the
+app. `search` needs only your library key (no card); the rest use your saved card. Title ids
+come from `libby search` and feed straight into `borrow`, `hold`, and `archive --title`.
+
+Search and borrow take a few extra flags:
+
+```
+--format <audiobook|ebook|magazine|all>   filter/borrow format (default audiobook)
+--available                               search: only titles available now
+--lucky-day                               borrow: take a Lucky Day copy if offered
+--period <days>                           borrow: lending period (default: preferred)
 ```
 
 Flags override saved config for a single run:
@@ -83,18 +103,26 @@ against OverDrive's public catalog, so the slug is all you need to supply.
 ## Using it as a library
 
 ```js
-import { authenticate, sync, audiobookLoans, archiveAudiobook } from 'libby-archiver';
+import {
+  searchCatalog, authenticate, borrowTitle, sync, audiobookLoans, archiveAudiobook,
+} from 'libby-archiver';
+
+// Search is auth-free — just the library key.
+const { items } = await searchCatalog('your-library', 'dune', { format: 'audiobook' });
 
 const cfg = { library: 'your-library', websiteId: '123', cardNumber: '…', pin: '' };
-const { client, identity } = await authenticate(cfg);
-const { loans } = await sync(client, identity);
+const { client, identity, cardId } = await authenticate(cfg);
 
+await borrowTitle(client, identity, cardId, items[0].id);
+
+const { loans } = await sync(client, identity);
 for (const loan of audiobookLoans(loans)) {
   await archiveAudiobook({ client, identity, cfg }, loan, './archive');
 }
 ```
 
-The lower-level pieces are exported as well: `openLoan`, `fetchOpenbook`, `decodeOpenbook`,
+Checkout also exports `returnTitle`, `placeHold`, `cancelHold`, and `getLoanPeriods`. The
+lower-level pieces are exported too: `openLoan`, `fetchOpenbook`, `decodeOpenbook`,
 `extractSpine`, `downloadPart`, `fetchThunderMedia`, `resolveLibrary`, and the `SentryClient` /
 `SentryError` primitives. See [`src/index.mjs`](src/index.mjs).
 
