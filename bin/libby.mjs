@@ -9,8 +9,8 @@
 //   libby return <id>              give a title back
 //   libby hold <id>                place a hold
 //   libby unhold <id>              cancel a hold
-//   libby list                     list your current audiobook loans
-//   libby archive --all            archive every audiobook loan
+//   libby list                     list your current loans (audiobook, ebook, magazine)
+//   libby archive --all            archive every loan (audiobook / ebook / magazine)
 //   libby archive --title <id>     archive one title
 //   libby auth                     verify authentication only
 //   libby where                    print config + session file locations
@@ -26,8 +26,9 @@
 
 import process from 'node:process';
 import { authenticate } from '../src/auth.mjs';
-import { sync, audiobookLoans } from '../src/loans.mjs';
+import { sync, audiobookLoans, readableLoans } from '../src/loans.mjs';
 import { archiveAudiobook } from '../src/archive.mjs';
+import { archiveReadable } from '../src/archive-read.mjs';
 import { searchCatalog } from '../src/search.mjs';
 import { getAvailability, getTitle } from '../src/discover.mjs';
 import { borrowTitle, returnTitle, placeHold, cancelHold } from '../src/checkout.mjs';
@@ -35,7 +36,7 @@ import { SentryError } from '../src/sentry.mjs';
 import { runInit } from '../src/init.mjs';
 import { loadConfig, configPath, sessionPath } from '../src/config.mjs';
 
-const HELP = `libby — search, borrow, and archive Libby / OverDrive audiobooks (browser-free)
+const HELP = `libby — search, borrow, and archive Libby / OverDrive audiobooks, ebooks & magazines (browser-free)
 
 Usage:
   libby init                     interactive setup — run this first
@@ -46,18 +47,21 @@ Usage:
   libby return <id>              return a loan early
   libby hold <id>                place a hold on an unavailable title
   libby unhold <id>              cancel a hold
-  libby list                     list your current audiobook loans
-  libby archive --all            archive every audiobook loan
+  libby list                     list your current loans (audiobook, ebook, magazine)
+  libby archive --all            archive every loan (audiobooks, ebooks, magazines)
   libby archive --title <id>     archive a single title by id
   libby auth                     verify authentication only
   libby where                    show config + session locations
   libby help                     show this help
 
-Search/borrow options:
-  --format <audiobook|ebook|magazine|all>   filter/borrow format (default audiobook)
+Search/borrow/archive options:
+  --format <audiobook|ebook|magazine|all>   filter format (search/borrow/list/archive)
   --available                               search: only titles available now
   --lucky-day                               borrow: take a Lucky Day copy if offered
   --period <days>                           borrow: lending period (default: preferred)
+
+Audiobooks download as raw MP3 spine parts; ebooks and magazines assemble into an EPUB
+(fixed-layout for magazines) alongside the decoded pages and plaintext assets.
 
 Config options (override saved config):
   --card <n>  --pin <n>  --library <key>  --website <id>
@@ -268,14 +272,18 @@ async function main() {
   }
 
   const { loans } = await sync(client, identity);
-  const books = audiobookLoans(loans);
+  // Everything archivable: audiobooks (listen host) + ebooks/magazines (read host).
+  const archivable = [...audiobookLoans(loans), ...readableLoans(loans)];
+  const inFormat = (l) =>
+    !args.format || args.format === 'all' ? true : l.type === args.format;
 
   if (command === 'list') {
-    if (!books.length) return console.log('No audiobook loans.');
-    console.log(`${books.length} audiobook loan(s):`);
-    for (const b of books) {
+    const shown = archivable.filter(inFormat);
+    if (!shown.length) return console.log('No loans to archive.');
+    console.log(`${shown.length} loan(s):`);
+    for (const b of shown) {
       console.log(
-        `  ${b.id}  ${b.title}${b.author ? ` — ${b.author}` : ''}  (due ${b.expires ?? '?'})`,
+        `  ${b.id}  [${b.type}] ${b.title}${b.author ? ` — ${b.author}` : ''}  (due ${b.expires ?? '?'})`,
       );
     }
     return;
@@ -283,22 +291,23 @@ async function main() {
 
   if (command === 'archive') {
     let targets;
-    if (args.title) targets = books.filter((b) => b.id === String(args.title));
-    else if (args.all) targets = books;
+    if (args.title) targets = archivable.filter((b) => b.id === String(args.title));
+    else if (args.all) targets = archivable.filter(inFormat);
     else {
       console.error('Specify what to archive: --all, or --title <id>.');
       console.error('See your loans with `libby list`.');
       process.exit(2);
     }
     if (!targets.length) {
-      console.error('No matching audiobook loans to archive.');
+      console.error('No matching loans to archive.');
       process.exit(1);
     }
     const ctx = { client, identity, cfg, log: cfg.log };
     const done = [];
     for (const loan of targets) {
       try {
-        done.push(await archiveAudiobook(ctx, loan, cfg.out));
+        const archive = loan.type === 'audiobook' ? archiveAudiobook : archiveReadable;
+        done.push(await archive(ctx, loan, cfg.out));
       } catch (e) {
         console.error(`FAILED "${loan.title}": ${e.message}`);
         if (e instanceof SentryError && e.result === 'whoa') {

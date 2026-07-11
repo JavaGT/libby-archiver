@@ -15,6 +15,11 @@ export function audiobookLoans(loans) {
   return loans.filter((l) => l.type === 'audiobook');
 }
 
+/** Ebook + magazine loans — the read-host formats archived via archiveReadable. */
+export function readableLoans(loans) {
+  return loans.filter((l) => l.type === 'ebook' || l.type === 'magazine');
+}
+
 function normalizeLoan(loan) {
   const cover =
     loan.covers?.cover510Wide?.href ||

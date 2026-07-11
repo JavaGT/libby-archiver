@@ -33,11 +33,22 @@ export function buildCodex(loan, cfg) {
   return Buffer.from(JSON.stringify(codex)).toString('base64');
 }
 
+/**
+ * Map a loan's type to the `/open/<kind>/` segment the gateway expects.
+ * audiobook -> audiobook (listen host); ebook -> book, magazine -> magazine (read host).
+ */
+export function openKindFor(loan) {
+  const t = (loan.type ?? '').toLowerCase();
+  if (t === 'audiobook') return 'audiobook';
+  if (t === 'magazine') return 'magazine';
+  return 'book'; // ebook and anything else the read host serves
+}
+
 /** Open a loan on the gateway and return the passport JSON. */
-export async function openLoan(client, identity, loan, cfg) {
+export async function openLoan(client, identity, loan, cfg, kind = openKindFor(loan)) {
   const t = encodeURIComponent(buildCodex(loan, cfg));
   const path =
-    `/open/audiobook/card/${loan.cardId}/title/${loan.id}` + `?t=${t}&website_id=${cfg.websiteId}`;
+    `/open/${kind}/card/${loan.cardId}/title/${loan.id}` + `?t=${t}&website_id=${cfg.websiteId}`;
   const res = await client.requestOk('GET', path, {
     bearer: identity,
     host: GATEWAY_HOST,

@@ -1,7 +1,7 @@
 {
   "name": "libby-archiver",
-  "version": "0.3.0",
-  "description": "Browser-free Node.js library + CLI to archive your Libby / OverDrive audiobook loans — raw MP3 spine parts plus full metadata sidecars, no re-encoding.",
+  "version": "0.4.0",
+  "description": "Browser-free Node.js library + CLI to archive your Libby / OverDrive loans — audiobooks as raw MP3 spine parts, ebooks and magazines as EPUBs, plus full metadata sidecars.",
   "type": "module",
   "main": "./src/index.mjs",
   "exports": {
@@ -32,6 +32,8 @@
     "download",
     "mp3",
     "ebook",
+    "magazine",
+    "epub",
     "library",
     "cli"
   ],

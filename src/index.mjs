@@ -23,7 +23,7 @@ export {
 } from './sentry.mjs';
 
 // Account / loans
-export { sync, audiobookLoans } from './loans.mjs';
+export { sync, audiobookLoans, readableLoans } from './loans.mjs';
 
 // Catalog search + discovery + checkout (borrow / return / hold)
 export { searchCatalog } from './search.mjs';
@@ -34,17 +34,23 @@ export { getLoanPeriods, borrowTitle, returnTitle, placeHold, cancelHold } from 
 export {
   buildCodex,
   openLoan,
+  openKindFor,
   fetchOpenbook,
   decodeOpenbook,
   extractSpine,
 } from './openbook.mjs';
 
+// Read-host (ebook / magazine) content decode + EPUB packaging
+export { cfc1, decodePage, fetchPage, fetchReadResource, assetRefs } from './read.mjs';
+export { buildEpub, zip } from './epub.mjs';
+
 // Download + supplementary metadata
 export { downloadPart } from './download.mjs';
 export { fetchThunderMedia, maxResCoverUrl, downloadCover } from './metadata.mjs';
 
-// High-level orchestrator (one loan -> self-contained folder)
+// High-level orchestrators (one loan -> self-contained folder)
 export { archiveAudiobook } from './archive.mjs';
+export { archiveReadable } from './archive-read.mjs';
 
 // Config + library discovery
 export {
