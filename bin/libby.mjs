@@ -3,6 +3,8 @@
 //
 //   libby init                     interactive setup (run this first)
 //   libby search <terms>           search the catalog
+//   libby info <id>                show full catalog detail for a title
+//   libby avail <id...>            check real-time availability
 //   libby borrow <id>              check out a title
 //   libby return <id>              give a title back
 //   libby hold <id>                place a hold
@@ -27,6 +29,7 @@ import { authenticate } from '../src/auth.mjs';
 import { sync, audiobookLoans } from '../src/loans.mjs';
 import { archiveAudiobook } from '../src/archive.mjs';
 import { searchCatalog } from '../src/search.mjs';
+import { getAvailability, getTitle } from '../src/discover.mjs';
 import { borrowTitle, returnTitle, placeHold, cancelHold } from '../src/checkout.mjs';
 import { SentryError } from '../src/sentry.mjs';
 import { runInit } from '../src/init.mjs';
@@ -37,6 +40,8 @@ const HELP = `libby — search, borrow, and archive Libby / OverDrive audiobooks
 Usage:
   libby init                     interactive setup — run this first
   libby search <terms>           search your library's catalog
+  libby info <id>                full catalog detail for a title
+  libby avail <id...>            real-time availability (copies, holds, wait)
   libby borrow <id>              check out a title (id from search)
   libby return <id>              return a loan early
   libby hold <id>                place a hold on an unavailable title
@@ -72,6 +77,22 @@ function parseArgs(argv) {
     } else args._.push(a);
   }
   return args;
+}
+
+/** Word-wrap text to `width` columns, prefixing each line with `indent`. */
+function wrap(text, width = 78, indent = '') {
+  const out = [];
+  for (const para of String(text).split('\n')) {
+    let line = '';
+    for (const word of para.split(/\s+/)) {
+      if (line && (line + ' ' + word).length > width) {
+        out.push(indent + line);
+        line = word;
+      } else line = line ? line + ' ' + word : word;
+    }
+    out.push(indent + line);
+  }
+  return out.join('\n');
 }
 
 /** Resolve just the library key (for auth-free commands like search). */
@@ -145,6 +166,57 @@ async function main() {
       console.log(`        ${it.type}${it.year ? `, ${it.year}` : ''} · ${avail}`);
     }
     console.log(`\nBorrow one with:  libby borrow <id>`);
+    return;
+  }
+
+  // info <id> — full catalog detail (auth-free).
+  if (command === 'info') {
+    const id = args._[1] ?? args.title;
+    if (!id) {
+      console.error('Usage: libby info <id>   (id from `libby search`)');
+      process.exit(2);
+    }
+    const { library, insecureTLS } = resolveLibraryKey(args);
+    const t = await getTitle(library, String(id), { insecureTLS });
+    const a = t.availability;
+    const availLine = a.available
+      ? `available now (${a.availableCopies}/${a.ownedCopies} copies)`
+      : `${a.holds} hold(s) on ${a.ownedCopies} cop(y/ies)` +
+        (a.estimatedWaitDays ? `, ~${a.estimatedWaitDays} day wait` : '');
+    console.log(`\n${t.title}${t.subtitle ? `: ${t.subtitle}` : ''}`);
+    if (t.author) console.log(`  by ${t.author}`);
+    const meta = [t.type, t.year, t.edition, t.languages.join('/')].filter(Boolean).join(' · ');
+    if (meta) console.log(`  ${meta}`);
+    if (t.publisher) console.log(`  ${t.publisher}`);
+    if (t.starRating) console.log(`  ★ ${t.starRating} (${t.starRatingCount ?? 0} ratings)`);
+    console.log(`  ${availLine}`);
+    if (t.formats.length) console.log(`  formats: ${t.formats.join(', ')}`);
+    if (t.subjects.length) console.log(`  subjects: ${t.subjects.slice(0, 8).join(', ')}`);
+    if (t.characteristics?.length) console.log(`  themes: ${t.characteristics.join(', ')}`);
+    if (t.isbns.length) console.log(`  ISBN: ${t.isbns.join(', ')}`);
+    if (t.description) console.log(`\n${wrap(t.description, 78, '  ')}`);
+    console.log(`\nBorrow with:  libby borrow ${t.id}`);
+    return;
+  }
+
+  // avail <id...> — real-time availability for one or more titles (auth-free).
+  if (command === 'avail') {
+    const ids = args._.slice(1);
+    if (!ids.length) {
+      console.error('Usage: libby avail <id> [<id> ...]');
+      process.exit(2);
+    }
+    const { library, insecureTLS } = resolveLibraryKey(args);
+    const rows = await getAvailability(library, ids, { insecureTLS });
+    for (const r of rows) {
+      const status = r.available
+        ? `available now — ${r.availableCopies}/${r.ownedCopies} copies` +
+          (r.luckyDayAvailableCopies ? ` (+${r.luckyDayAvailableCopies} Lucky Day)` : '')
+        : `${r.holds} hold(s) on ${r.ownedCopies} cop(y/ies)` +
+          (r.estimatedWaitDays ? `, ~${r.estimatedWaitDays} day wait` : '') +
+          (r.isHoldable ? '' : ' · not holdable');
+      console.log(`  ${r.id}  ${status}`);
+    }
     return;
   }
 

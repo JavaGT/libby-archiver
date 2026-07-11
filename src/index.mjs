@@ -25,8 +25,9 @@ export {
 // Account / loans
 export { sync, audiobookLoans } from './loans.mjs';
 
-// Catalog search + checkout (borrow / return / hold)
+// Catalog search + discovery + checkout (borrow / return / hold)
 export { searchCatalog } from './search.mjs';
+export { getAvailability, getTitle, getCharacteristics } from './discover.mjs';
 export { getLoanPeriods, borrowTitle, returnTitle, placeHold, cancelHold } from './checkout.mjs';
 
 // Open + openbook decode + spine

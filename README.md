@@ -57,6 +57,8 @@ Each audiobook gets its own folder:
 ```
 libby init                     setup — run this first
 libby search <terms>           search your library's catalog
+libby info <id>                full catalog detail for a title
+libby avail <id...>            real-time availability (copies, holds, wait)
 libby borrow <id>              check out a title (id from search)
 libby return <id>              return a loan early
 libby hold <id>                place a hold on an unavailable title
@@ -70,8 +72,13 @@ libby help                     usage
 ```
 
 `search`, `borrow`, `return`, and `hold` cover the full loan lifecycle without opening the
-app. `search` needs only your library key (no card); the rest use your saved card. Title ids
-come from `libby search` and feed straight into `borrow`, `hold`, and `archive --title`.
+app. `search`, `info`, and `avail` need only your library key (no card); the rest use your
+saved card. Title ids come from `libby search` and feed straight into `info`, `avail`,
+`borrow`, `hold`, and `archive --title`.
+
+`info` shows the full catalog record (description, formats, subjects, star rating, ISBNs, and
+OverDrive's "theme" tags). `avail` does a live availability check — copies, holds, and
+estimated wait — which is fresher than the snapshot baked into search results.
 
 Search and borrow take a few extra flags:
 
@@ -121,6 +128,7 @@ for (const loan of audiobookLoans(loans)) {
 }
 ```
 
+Discovery adds `getTitle`, `getAvailability`, and `getCharacteristics` (all auth-free).
 Checkout also exports `returnTitle`, `placeHold`, `cancelHold`, and `getLoanPeriods`. The
 lower-level pieces are exported too: `openLoan`, `fetchOpenbook`, `decodeOpenbook`,
 `extractSpine`, `downloadPart`, `fetchThunderMedia`, `resolveLibrary`, and the `SentryClient` /
