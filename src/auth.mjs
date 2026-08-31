@@ -80,10 +80,27 @@ async function mintChip(client) {
 }
 
 async function linkCard(client, identity, cfg) {
+  const ils = await resolveILS(client, cfg.websiteId, cfg.library);
   await client.requestOk('POST', `/auth/link/${cfg.websiteId}`, {
     bearer: identity,
-    body: { ils: cfg.library, username: cfg.cardNumber, password: cfg.pin ?? '' },
+    body: { ils, username: cfg.cardNumber, password: cfg.pin ?? '' },
   });
+}
+
+/**
+ * The catalog key is not always the identifier used by the library's card system.
+ * Ask Libby for the active auth form so consortium and renamed libraries work too.
+ */
+export async function resolveILS(client, websiteId, libraryKey) {
+  const res = await client.requestOk('GET', `/auth/forms/${websiteId}`);
+  const forms = res.json?.forms ?? [];
+  const exact = forms.find((form) => form.ilsName === libraryKey);
+  if (exact) return exact.ilsName;
+  if (forms.length === 1 && forms[0].ilsName) return forms[0].ilsName;
+  throw new Error(
+    `Could not determine the library card system for website ${websiteId}. ` +
+      'Use a library key matching one of the available auth forms.',
+  );
 }
 
 async function mintSyncCode(client, identity) {

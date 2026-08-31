@@ -20,7 +20,7 @@ export const GATEWAY_HOST = 'sentry.libbyapp.com';
 // Current live Dewey web-client version. Read from https://libbyapp.com/ ("version: '...'").
 // The version is baked into the chip at mint time via the `c=d:<version>` param; a stale
 // value causes `403 client_upgrade_required` at open. Bump this if OverDrive updates.
-export const CLIENT_VERSION = '22.0.2';
+export const CLIENT_VERSION = '22.1.1';
 
 // Default User-Agent mirrors the desktop web client.
 const DEFAULT_UA =
