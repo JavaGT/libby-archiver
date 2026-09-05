@@ -18,6 +18,7 @@ import { openLoan, fetchOpenbook, extractSpine, openKindFor } from './openbook.m
 import { fetchPage, fetchReadResource, assetRefs } from './read.mjs';
 import { buildEpub } from './epub.mjs';
 import { fetchThunderMedia, maxResCoverUrl, downloadCover } from './metadata.mjs';
+import { mapLimit } from './pool.mjs';
 import {
   assetName,
   safeJoin,
@@ -77,40 +78,41 @@ export async function archiveReadable(ctx, loan, outDir) {
     }
   }
 
-  // 4. fetch + decode every page; gather referenced assets
+  // 4. fetch + decode pages — 4 at a time (otherwise a magazine is hundreds of serial
+  // round trips); mapLimit keeps pageEntries in spine order. Logs report decoded pages.
   // Page paths come from the openbook — they are validated to stay inside bookDir.
-  const width = String(spine.length).length;
-  const pageEntries = [];
-  const wantedAssets = new Set();
-  for (const part of spine) {
-    log(`   decoding page ${part.index}/${spine.length} ...`);
+  const pageEntries = await mapLimit(spine, 4, async (part) => {
     const body = await fetchPage(part, { cookie, insecureTLS: cfg.insecureTLS });
     // keep each page at its original openbook path so relative ../assets refs stay correct
     const dest = safeJoin(bookDir, part.path);
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     fs.writeFileSync(dest, body, 'utf8');
-    for (const ref of assetRefs(body)) wantedAssets.add(ref); // normalized 'assets/xxx.jpg'
-    pageEntries.push({ path: part.path, body, viewport: viewportOf(openbook, part) });
-  }
+    log(`   decoded page ${part.index}/${spine.length}`);
+    return { path: part.path, body, viewport: viewportOf(openbook, part) };
+  });
 
-  // 5. fetch each unique asset (plaintext)
-  const assetEntries = [];
-  let i = 0;
-  for (const ref of wantedAssets) {
-    i++;
-    const name = assetName(ref);
-    log(`   fetching asset ${i}/${wantedAssets.size} (${name}) ...`);
-    const res = await fetchReadResource(web.replace(/\/$/, '') + '/' + ref, {
-      cookie,
-      insecureTLS: cfg.insecureTLS,
-    });
-    if (res.status !== 200) {
-      log(`   asset ${ref} -> HTTP ${res.status} (skipped)`);
-      continue;
-    }
-    fs.writeFileSync(path.join(assetsDir, name), res.body);
-    assetEntries.push({ path: `assets/${name}`, data: res.body });
-  }
+  // assets referenced by any decoded page, in first-seen page order
+  const wantedAssets = new Set();
+  for (const { body } of pageEntries) for (const ref of assetRefs(body)) wantedAssets.add(ref); // normalized 'assets/xxx.jpg'
+
+  // 5. fetch each unique asset (plaintext) — 4 at a time
+  const assetList = [...wantedAssets];
+  const assetEntries = (
+    await mapLimit(assetList, 4, async (ref, i) => {
+      const name = assetName(ref);
+      log(`   fetching asset ${i + 1}/${assetList.length} (${name}) ...`);
+      const res = await fetchReadResource(web.replace(/\/$/, '') + '/' + ref, {
+        cookie,
+        insecureTLS: cfg.insecureTLS,
+      });
+      if (res.status !== 200) {
+        log(`   asset ${ref} -> HTTP ${res.status} (skipped)`);
+        return null;
+      }
+      fs.writeFileSync(path.join(assetsDir, name), res.body);
+      return { path: `assets/${name}`, data: res.body };
+    })
+  ).filter(Boolean);
 
   // 6. assemble the EPUB
   log('   assembling EPUB...');
