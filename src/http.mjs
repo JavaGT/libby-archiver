@@ -2,7 +2,13 @@
 //
 // Every helper takes `insecureTLS` (for the mismatched-cert read edge) and enforces a
 // socket timeout — a hung connection must never wedge the whole CLI, which is exactly
-// what happens with a single-socket keep-alive agent and no timeout.
+// what happens with a keep-alive agent and no timeout. Timeouts are therefore enforced
+// twice: per-request (`timeout` option + req.destroy handler, the authoritative one while
+// a request is in flight) and on the agent itself as a backstop (covers idle pooled
+// sockets, which the per-request timeout never sees).
+//
+// REST traffic shares pooled keep-alive agents (one per TLS mode) so Thunder calls,
+// covers, pages, and spine parts reuse TLS connections instead of re-handshaking.
 //
 // The Sentry client (sentry.mjs) and the per-loan cookie jar (openbook.mjs) keep their
 // own specialized agents (chip/session binding) but inherit the same timeout defaults.
@@ -12,13 +18,21 @@ import https from 'node:https';
 export const DEFAULT_TIMEOUT_MS = 30_000;
 
 const agents = new Map();
-/** One pooled agent per TLS mode; the secure case uses Node's global agent. */
+/** Pooled keep-alive agent per TLS mode; bounded so parallel work can't explode sockets. */
 function agentFor(insecureTLS) {
-  if (!insecureTLS) return undefined;
-  let agent = agents.get(true);
+  const key = !!insecureTLS;
+  let agent = agents.get(key);
   if (!agent) {
-    agent = new https.Agent({ rejectUnauthorized: false });
-    agents.set(true, agent);
+    agent = new https.Agent({
+      keepAlive: true,
+      maxSockets: 8,
+      maxFreeSockets: 4,
+      keepAliveMsecs: 30_000,
+      noDelay: true,
+      timeout: DEFAULT_TIMEOUT_MS, // backstop; per-request timeout overrides while in flight
+      ...(insecureTLS ? { rejectUnauthorized: false } : {}),
+    });
+    agents.set(key, agent);
   }
   return agent;
 }
