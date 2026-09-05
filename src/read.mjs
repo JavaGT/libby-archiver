@@ -25,10 +25,13 @@ const CFC1_RE = /parent\.__bif_cfc1\(\s*self\s*,\s*'([^']*)'\s*\)/;
 
 /**
  * Swap chars 1 and 4 of every 4-char group — a hand-rolled, exactly-regex-equivalent
- * version of `blob.replace(/(.)(.)(.)(.)/g, '$4$2$3$1')` (measured ~2.5x faster on a
- * 2.8 MB blob). Regex `.` never matches the four JS line terminators, so — like the
- * engine — the scan jumps to just past the first terminator found inside a would-be
- * window and resumes from there; everything else is a plain code-unit permutation.
+ * version of `blob.replace(/(.)(.)(.)(.)/g, '$4$2$3$1')`. Regex `.` never matches the
+ * four JS line terminators, so — like the engine — the scan jumps to just past the
+ * first terminator found inside a would-be window and resumes from there; everything
+ * else is a plain code-unit permutation.
+ *
+ * This is the exact-for-any-string path; cfc1() only routes blobs through it that the
+ * latin1 byte fast path cannot guarantee (any code unit > 127).
  */
 function swapQuads(s) {
   const n = s.length;
@@ -58,9 +61,50 @@ function swapQuads(s) {
   return out;
 }
 
-/** Decode one `__bif_cfc1` blob to its cleartext (UTF-8) content. */
+/** Pure-ASCII gate: utf8 byteLength equals string length iff every code unit <= 127
+ * (single native scan; ~0.05 ms on a 2.8 MB blob — see perf/loop-showdown.mjs). */
+const isAscii = (s) => Buffer.byteLength(s, 'utf8') === s.length;
+
+/**
+ * Decode one `__bif_cfc1` blob to its cleartext (UTF-8) content.
+ *
+ * Fast path (every real blob): the blob is pure ASCII, so the quad swap runs on
+ * latin1 bytes in place and every encode/decode stage around it is native —
+ * measured 1.58x the code-unit loop on a 2.8 MB blob (perf/loop-showdown.mjs).
+ * Without \n/\r the windows stay aligned on every 4th char; with one, the scan
+ * mirrors the regex engine's retry-just-past-the-terminator. Any blob holding a
+ * code unit > 127 (non-ASCII, U+2028/U+2029, lone surrogates) falls back to
+ * swapQuads(), which is exact for arbitrary strings.
+ */
 export function cfc1(blob) {
-  return Buffer.from(swapQuads(blob), 'base64').toString('utf8');
+  if (!isAscii(blob)) return Buffer.from(swapQuads(blob), 'base64').toString('utf8');
+  const buf = Buffer.from(blob, 'latin1');
+  const n = buf.length;
+  if (n >= 4 && buf.indexOf(10) === -1 && buf.indexOf(13) === -1) {
+    for (let i = 0; i + 4 <= n; i += 4) {
+      const t = buf[i];
+      buf[i] = buf[i + 3];
+      buf[i + 3] = t;
+    }
+  } else {
+    let i = 0;
+    while (i + 4 <= n) {
+      let bad = -1;
+      if (buf[i] === 10 || buf[i] === 13) bad = i;
+      else if (buf[i + 1] === 10 || buf[i + 1] === 13) bad = i + 1;
+      else if (buf[i + 2] === 10 || buf[i + 2] === 13) bad = i + 2;
+      else if (buf[i + 3] === 10 || buf[i + 3] === 13) bad = i + 3;
+      if (bad !== -1) {
+        i = bad + 1; // a window containing a terminator can't match; the engine retries after it
+        continue;
+      }
+      const t = buf[i];
+      buf[i] = buf[i + 3];
+      buf[i + 3] = t;
+      i += 4;
+    }
+  }
+  return Buffer.from(buf.toString('latin1'), 'base64').toString('utf8');
 }
 
 /**

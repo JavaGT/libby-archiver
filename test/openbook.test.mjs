@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { decodeOpenbook, extractSpine, openKindFor } from '../src/openbook.mjs';
+import { decodeOpenbook, descramble, extractSpine, openKindFor } from '../src/openbook.mjs';
 
 // Forward (encode) direction of bifocal's descramble: per position a with key digit d,
 // find the printable char whose scrambled output is the target char. The mapping is
@@ -83,4 +83,47 @@ test('openKindFor maps loan types to gateway open kinds', () => {
   assert.equal(openKindFor({ type: 'ebook' }), 'book');
   assert.equal(openKindFor({ type: 'magazine' }), 'magazine');
   assert.equal(openKindFor({ type: 'video' }), 'book');
+});
+
+// ---- descramble fast path vs the exact character-loop reference ----------------
+
+// Reference: the pre-W23 implementation (array of 1-char strings + join). The W23
+// latin1 byte fast path is only lossless for pure ASCII, so anything with a code
+// unit > 127 must go down the code-unit fallback — both are pinned against this.
+function refDescramble(key, data) {
+  const klen = key.length;
+  const shifts = new Array(klen);
+  for (let i = 0; i < klen; i++) shifts[i] = parseFloat(key[i]) || 0;
+  const out = new Array(data.length);
+  for (let a = 0; a < data.length; a++) {
+    let ch = data.charCodeAt(a);
+    const d = shifts[a % klen];
+    if (d) {
+      ch += (a + d) % 94;
+      if (ch > 126) ch = (ch % 126) + 32;
+    }
+    out[a] = String.fromCharCode(ch);
+  }
+  return out.join('');
+}
+
+test('descramble matches the character-loop reference (fast path and fallback)', () => {
+  const cases = [
+    ['dcba9', ''], // empty
+    ['dcba9', 'abcdefghijklmnopqrstuvwxyz0123456789+/= ABCDEF'], // pure ASCII
+    ['9a2f4ed7', 'x'.repeat(5000) + '\x7f tail'], // 0x7f stays inside the ASCII fast path
+    ['dcba0', 'digit zero parses to shift 0 — untouched'], // '0' is a no-op like NaN
+    ['dcba9', 'é-latin1-range\uffff'], // code units > 127 -> code-unit fallback
+    ['9a2f4ed7', 'a\u2028b€c\ud83d\ude00'], // >255 chars incl. surrogates
+  ];
+  for (const [key, data] of cases) {
+    assert.equal(descramble(key, data), refDescramble(key, data), JSON.stringify(data.slice(0, 24)));
+  }
+});
+
+test('descramble inverts the scramble at scale on the ASCII fast path', () => {
+  const payload = Buffer.from(JSON.stringify({ b: { ok: 1 } }))
+    .toString('base64')
+    .repeat(1000);
+  assert.equal(descramble('dcba9', scramble('dcba9', payload)), payload);
 });

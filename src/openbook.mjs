@@ -60,24 +60,56 @@ export async function openLoan(client, identity, loan, cfg, kind = openKindFor(l
 
 // ---- The bifocal eData decoder (pure Node) -------------------------------------
 
-function descramble(key, data) {
-  // Per-position shift, precomputed once — the per-character parseFloat dominated
-  // this loop. Value semantics are unchanged: NaN (non-digit) and 0 ('0') both
-  // leave the character untouched.
+/** Pure-ASCII gate: utf8 byteLength equals string length iff every code unit <= 127
+ * (single native scan — see perf/loop-showdown.mjs for the cost/uptake numbers). */
+const isAscii = (s) => Buffer.byteLength(s, 'utf8') === s.length;
+
+/**
+ * Undo bifocal's per-position scramble. Exported for tests.
+ *
+ * Fast path (the wire data is always printable ASCII): shift the latin1 bytes in
+ * place and materialize once with a native toString — measured 4.3–6.5x the
+ * character-loop version on a 2 MB string across mixed keys. Arithmetic is
+ * unchanged and byte-exact: inputs are <= 127, so shifted values are <= 220 and
+ * wrap to <= 157, which still fits a byte; the rotating key index (p) is just
+ * `a % klen` without the division. Data holding any code unit > 127 falls back
+ * to a Uint16Array code-unit loop that is exact for arbitrary strings.
+ */
+export function descramble(key, data) {
   const klen = key.length;
   const shifts = new Array(klen);
   for (let i = 0; i < klen; i++) shifts[i] = parseFloat(key[i]) || 0;
-  const out = new Array(data.length);
-  for (let a = 0; a < data.length; a++) {
-    let ch = data.charCodeAt(a);
-    const d = shifts[a % klen];
-    if (d) {
-      ch += (a + d) % 94;
-      if (ch > 126) ch = (ch % 126) + 32;
+  if (!isAscii(data)) {
+    const n = data.length;
+    const u = new Uint16Array(n);
+    for (let a = 0; a < n; a++) {
+      let ch = data.charCodeAt(a);
+      const d = shifts[a % klen];
+      if (d) {
+        ch += (a + d) % 94;
+        if (ch > 126) ch = (ch % 126) + 32;
+      }
+      u[a] = ch;
     }
-    out[a] = String.fromCharCode(ch);
+    let out = '';
+    for (let k = 0; k < n; k += 8192) {
+      out += String.fromCharCode.apply(null, u.subarray(k, Math.min(k + 8192, n)));
+    }
+    return out;
   }
-  return out.join('');
+  const bytes = Buffer.from(data, 'latin1');
+  const n = bytes.length;
+  let p = 0;
+  for (let a = 0; a < n; a++) {
+    const d = shifts[p];
+    if (++p === klen) p = 0;
+    if (d) {
+      let ch = bytes[a] + ((a + d) % 94);
+      if (ch > 126) ch = (ch % 126) + 32;
+      bytes[a] = ch;
+    }
+  }
+  return bytes.toString('latin1');
 }
 
 // Inside a string literal, copying runs is O(runs) instead of O(chars): stop at a
