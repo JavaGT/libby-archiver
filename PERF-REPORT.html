@@ -54,7 +54,7 @@
   <div class="meta">base commit be863fd (main) · node v26.7.0 · Apple M4</div>
   <span class="refresh-note">⟳ this page refreshes itself every 5 min</span>
   <div class="tldr">
-    <div class="stat"><b>27×</b><span>EPUB assembly (189→7 ms)</span></div><div class="stat"><b>−26%</b><span>zip peak RAM (108→80 MB)</span></div><div class="stat"><b>3.8×</b><span>network fetch pattern</span></div><div class="stat"><b>2–7×</b><span>page-blob decode</span></div><div class="stat"><b>10 waves</b><span>9 merged · 1 measured &amp; rejected</span></div><div class="stat"><b>52</b><span>tests (was 28)</span></div>
+    <div class="stat"><b>27×</b><span>EPUB assembly (189→7 ms)</span></div><div class="stat"><b>−34%</b><span>EPUB peak RAM (108→71 MB)</span></div><div class="stat"><b>3.8×</b><span>network fetch pattern</span></div><div class="stat"><b>2.5×</b><span>openbook decode</span></div><div class="stat"><b>15 waves</b><span>13 merged · 2 measured &amp; rejected</span></div><div class="stat"><b>59</b><span>tests incl. e2e (was 28)</span></div>
   </div>
 </header>
 
@@ -206,18 +206,70 @@
     
     <p class="dim files">test/http.test.mjs · test/epub-integrity.test.mjs · test/manifest-ref.test.mjs · test/pool.test.mjs · test/helpers/sim-server.mjs</p>
   </div>
+  <div class="card" id="W12">
+    <div class="card-head">
+      <span class="wave-id">W12</span>
+      <h3>Streaming EPUB writer (peak RAM)</h3>
+      <span class="badge good">merged</span>
+      <span class="dim area">library · RAM</span>
+    </div>
+    <p class="change">New writeZip/writeEpub stream the archive to disk entry-by-entry (atomic .part + rename) instead of materializing the whole EPUB in memory — peak moves from O(archive) to O(largest entry). zip()/buildEpub stay with byte-identical output (pinned by test); archiveReadable now writes via writeEpub; entriesFor/writeZip/writeEpub are exported from the library index.</p>
+    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>peak RSS producing 12.7 MB EPUB (writeZip vs zip)</td><td class="num">82 MB</td><td class="num"><b class="good">71 MB</b> <span class="dim">(13% less, 1.15×)</span></td></tr><tr><td>same, vs the 108 MB the campaign started from</td><td class="num">108 MB</td><td class="num"><b class="good">71 MB</b> <span class="dim">(34% less, 1.52×)</span></td></tr><tr><td>wall time for that EPUB (zip → writeZip)</td><td class="num">10 ms</td><td class="num"><b class="warn">15 ms</b> <span class="dim">(+50%)</span></td></tr></table>
+    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>Streaming is ~1.5× slower in wall time than one big memcpy — trivial in absolute terms (~15 ms) — and the RAM saving scales with archive size</li><li>Archive size is known only after the write; the write path is async</li><li>Follow-up identified, not in scope: page/asset body arrays still hold decoded content in RAM while assembling — a lazy from-disk loader (zipChunks already accepts async sources) would cut the remaining resident set</li></ul>
+    
+    <p class="dim files">src/epub.mjs · src/archive-read.mjs · src/index.mjs</p>
+  </div>
+  <div class="card" id="W13">
+    <div class="card-head">
+      <span class="wave-id">W13</span>
+      <h3>Openbook decode (descramble + literal parser)</h3>
+      <span class="badge good">merged</span>
+      <span class="dim area">library · CPU</span>
+    </div>
+    <p class="change">decodeOpenbook ran parseFloat per character (key shifts are per-position constants — precomputed once) and scanned string literals character-by-character (now copies whole runs between escapes/quotes with identical escape semantics). Runs once per archived loan, on a player page that can exceed 2 MB.</p>
+    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>decode 1.9 MB player page</td><td class="num">49.5 ms</td><td class="num"><b class="good">20.2 ms</b> <span class="dim">(59% less, 2.45×)</span></td></tr></table>
+    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>Outputs verified identical by the bench (JSON deep-equal) and the full test suite</li><li>First rewrite used sticky regexes (match-at-index only), which swallowed closing quotes — the existing single-quoted-literal test caught it immediately; fixed to global/next-occurrence semantics. Proof the regression net pays.</li></ul>
+    
+    <p class="dim files">src/openbook.mjs</p>
+  </div>
+  <div class="card" id="W14">
+    <div class="card-head">
+      <span class="wave-id">W14</span>
+      <h3>Auth/checkout path examination</h3>
+      <span class="badge bad">measured, rejected</span>
+      <span class="dim area">interface · latency</span>
+    </div>
+    <p class="change">Examined auth.mjs/sentry.mjs/checkout.mjs for wins. The auth handshake (mint chip → link card → sync code → clone → remint) is protocol-ordered and cached across runs by the session file; sentry.mjs already keeps one pooled agent; search/checkout are 1–2 calls.</p>
+    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>actionable serial work found</td><td class="num">0</td><td class="num"><b class="warn">0</b> <span class="dim">(+0%)</span></td></tr></table>
+    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>Rejected: nothing to parallelize without violating the chip protocol's ordering; per-invocation cost is already amortized by the session cache. Recorded so the surface isn't re-swept without new information.</li></ul>
+    
+    <p class="dim files"></p>
+  </div>
+  <div class="card" id="W15">
+    <div class="card-head">
+      <span class="wave-id">W15</span>
+      <h3>End-to-end archive tests against a simulated OverDrive</h3>
+      <span class="badge good">merged</span>
+      <span class="dim area">all · correctness</span>
+    </div>
+    <p class="change">New e2e suite drives the REAL orchestrators (archiveAudiobook / archiveReadable) through loan open → session handshake → openbook decode → downloads → EPUB/sidecars → integrity manifest against three local TLS hosts serving the genuine wire formats (scrambled window.eData player pages, __bif_cfc1 page bodies, CDN-style part redirects). Only the credential boundary (authenticate/sentry) is stubbed. Building it flushed out two real bugs: CookieJar and jsonRequest silently mis-connected when a host carried an explicit port (both now parse host:port), and it caught the W13 sticky-regex quote bug the day it was written. Thunder got a LIBBY_THUNDER_HOST test seam.</p>
+    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>tests</td><td class="num">52</td><td class="num"><b class="good">59</b> <span class="dim">(-13% more, 0.88×)</span></td></tr><tr><td>archive flows covered end-to-end</td><td class="num">0</td><td class="num"><b class="good">2</b> <span class="dim">(0% more, 0×)</span></td></tr></table>
+    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>One-line test seam in metadata.mjs (env-overridable Thunder host) — production default unchanged</li><li>Tests skip gracefully when openssl is unavailable</li></ul>
+    
+    <p class="dim files">test/e2e.test.mjs · test/helpers/overdrive-sim.mjs · src/openbook.mjs · src/http.mjs · src/metadata.mjs</p>
+  </div>
 
 <h2>Baseline measurements (code at be863fd (main))</h2>
 <p class="dim">From <code>perf/results-baseline.json</code> — Apple M4, numbers are medians. A same-code rerun agrees within noise.</p>
 <table><tr><td>crc32_4mb (JS vs native zlib)</td><td class="num">7.77</td><td class="num">0.11</td></tr><tr><td>zip_assembly (13 MB synthetic EPUB)</td><td class="num">188.74</td><td class="num">108</td><td class="num">12.7</td></tr><tr><td>deflate_1mb_text</td><td class="num">12.02</td><td class="num">5.68</td><td class="num">0.09</td><td class="num">0.09</td></tr><tr><td>deflate_1mb_jpegish</td><td class="num">14.45</td><td class="num">14.44</td><td class="num">1</td></tr><tr><td>cfc1_decode_2_8mb_blob</td><td class="num">65</td></tr><tr><td>manifest_hash_50mb</td><td class="num">23.98</td></tr><tr><td>cli_startup_help</td><td class="num">36.4</td><td class="num">27.3</td></tr><tr><td>net_reuse_30_gets_loopback</td><td class="num">82</td><td class="num">30</td></tr><tr><td>net_concurrency_120req_25ms</td><td class="num">3202</td></tr></table>
 
 <h2>How to adopt</h2>
-<p>Everything lives on branch <code>perf-trial-20260906-030748</code> (hub), merged from lane branches <code>-cpu</code> and <code>-net</code>; each wave is an independent commit so any piece can be adopted or dropped alone. <code>main</code> is untouched.</p><p>To adopt everything: <code>git merge perf-trial-20260906-030748</code> from main (fast-forward). package.json engines is now <code>&gt;=20.15</code> (zlib.crc32).</p><p>Behavioral deltas to be aware of: EPUB bytes differ from baseline by design (stored media, level-6 text) but remain spec-valid and ~0.2% smaller; page/asset log lines now report completions rather than starts; anything else is byte-identical (manifests, decoded content).</p><p>Reproducible: <code>node --test</code> (52), <code>node --expose-gc perf/bench.mjs</code>, <code>node perf/net-sim.mjs src current</code>. Lane notes: perf-notes-cpu.md / perf-notes-net.md in the respective worktrees.</p>
+<p>Everything from both waves lives on branch <code>perf-trial-20260906-083640</code> (branched from wave-1 tip 03d0921, which holds waves W1–W11). Each wave is an independent commit; <code>main</code> is untouched.</p><p>To adopt everything: <code>git merge perf-trial-20260906-083640</code> from main (fast-forward). package.json engines is now <code>&gt;=20.15</code> (zlib.crc32).</p><p>Behavioral deltas: EPUB bytes differ from baseline by design (stored media, level-6 text) but stay spec-valid and ~0.2% smaller; the EPUB write path is async (writeEpub); page/asset logs report completions; everything else is byte-identical (manifests, decoded content).</p><p>Reproducible: <code>node --test</code> (59), <code>node --expose-gc perf/bench.mjs</code>, <code>node perf/net-sim.mjs src current</code>, <code>node --expose-gc perf/zip-stream-one.mjs zip|writeZip</code>. Lane notes: perf-notes-cpu.md / perf-notes-net.md / perf-notes-ram.md.</p>
 
 <h2>Campaign log</h2>
-<table><tr><td class="dim">03:48</td><td>Network patterns measured against local latency server: reuse 30 conns → ≤1 (82→41 ms loopback), concurrency 3.84× (3202→834 ms). Report finalized.</td></tr><tr><td class="dim">03:44</td><td>Regression + tradeoff test wave (W11): suite 28 → 52, all green. Local-TLS fixture server added (test/helpers/sim-server.mjs).</td></tr><tr><td class="dim">03:31</td><td>CPU lane complete (receipt: zip 189→5 ms fresh-process, cfc1 60→8.6 ms, manifest identical). Both lanes merged into hub; engines bumped to &gt;=20.15; 39/39 tests green; merged bench: zip 27×, RSS −26%, EPUB 0.2% smaller.</td></tr><tr><td class="dim">03:25</td><td>Subagent limit reduced to 1: net lane taken over by coordinator after its first 2 commits; mapLimit fail-fast bug found in review and fixed with a proper pinning test.</td></tr><tr><td class="dim">03:14</td><td>Baseline measured. W10 (CLI lazy loading) measured and rejected — ~9 ms ceiling. Lanes dispatched: CPU (W1–W6) and network (W7–W9).</td></tr><tr><td class="dim">03:12</td><td>Bench harness written (perf/bench.mjs, zip-one.mjs, gen.mjs); baseline snapshot captured; suite green at base (28 tests).</td></tr><tr><td class="dim">03:07</td><td>Trial opened: worktrees + branches perf-trial-20260906-030748{,-cpu,-net} created from be863fd.</td></tr></table>
+<table><tr><td class="dim">09:20</td><td>Wave 2 closed: 3 merged (W12, W13, W15), 1 rejected (W14). Everything lives on perf-trial-20260906-083640 (contains wave 1 + wave 2, linear history).</td></tr><tr><td class="dim">09:05</td><td>W12 landed from lane: writeZip/writeEpub streaming writer (byte-identical output, RSS 82→71 MB on the synthetic book), merged to wave-2 hub; e2e suite (W15) green through the streaming path — 59/59.</td></tr><tr><td class="dim">08:36</td><td>Wave 2 opened (goal re-issued): worktrees perf-trial-20260906-083640{,-ram} branched from wave-1 tip (03d0921). W13 openbook decode merged (49.5→20.2 ms, 2.5×, outputs identical). W14 auth/checkout examined, rejected (protocol-ordered + session-cached). W12 streaming EPUB writer in progress (subagent).</td></tr><tr><td class="dim">03:48</td><td>Network patterns measured against local latency server: reuse 30 conns → ≤1 (82→41 ms loopback), concurrency 3.84× (3202→834 ms). Report finalized.</td></tr><tr><td class="dim">03:44</td><td>Regression + tradeoff test wave (W11): suite 28 → 52, all green. Local-TLS fixture server added (test/helpers/sim-server.mjs).</td></tr><tr><td class="dim">03:31</td><td>CPU lane complete (receipt: zip 189→5 ms fresh-process, cfc1 60→8.6 ms, manifest identical). Both lanes merged into hub; engines bumped to &gt;=20.15; 39/39 tests green; merged bench: zip 27×, RSS −26%, EPUB 0.2% smaller.</td></tr><tr><td class="dim">03:25</td><td>Subagent limit reduced to 1: net lane taken over by coordinator after its first 2 commits; mapLimit fail-fast bug found in review and fixed with a proper pinning test.</td></tr><tr><td class="dim">03:14</td><td>Baseline measured. W10 (CLI lazy loading) measured and rejected — ~9 ms ceiling. Lanes dispatched: CPU (W1–W6) and network (W7–W9).</td></tr><tr><td class="dim">03:12</td><td>Bench harness written (perf/bench.mjs, zip-one.mjs, gen.mjs); baseline snapshot captured; suite green at base (28 tests).</td></tr><tr><td class="dim">03:07</td><td>Trial opened: worktrees + branches perf-trial-20260906-030748{,-cpu,-net} created from be863fd.</td></tr></table>
 
-<footer>Auto-generated by <code>perf/render.mjs</code> from <code>perf/report-data.json</code> · trial branches <code>perf-trial-20260906-030748*</code> · report last rendered 2026-09-06 03:48</footer>
+<footer>Auto-generated by <code>perf/render.mjs</code> from <code>perf/report-data.json</code> · trial branches <code>perf-trial-20260906-030748*</code> · report last rendered 2026-09-06 09:20</footer>
 </main>
 </body>
 </html>

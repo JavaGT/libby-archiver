@@ -14,31 +14,31 @@
     "node": "v26.7.0",
     "cpu": "Apple M4"
   },
-  "rendered": "2026-09-06 08:55",
+  "rendered": "2026-09-06 09:20",
   "tldr": [
     {
       "value": "27×",
       "label": "EPUB assembly (189→7 ms)"
     },
     {
-      "value": "−26%",
-      "label": "zip peak RAM (108→80 MB)"
+      "value": "−34%",
+      "label": "EPUB peak RAM (108→71 MB)"
     },
     {
       "value": "3.8×",
       "label": "network fetch pattern"
     },
     {
-      "value": "2–7×",
-      "label": "page-blob decode"
+      "value": "2.5×",
+      "label": "openbook decode"
     },
     {
-      "value": "10 waves",
-      "label": "9 merged · 1 measured & rejected"
+      "value": "15 waves",
+      "label": "13 merged · 2 measured & rejected"
     },
     {
-      "value": "52",
-      "label": "tests (was 28)"
+      "value": "59",
+      "label": "tests incl. e2e (was 28)"
     }
   ],
   "summary": [
@@ -338,24 +338,40 @@
       "id": "W12",
       "name": "Streaming EPUB writer (peak RAM)",
       "area": "library · RAM",
-      "status": "in-progress",
-      "change": "writeZip/writeEpub stream the archive to disk entry-by-entry (atomic .part + rename) instead of materializing the whole EPUB in memory — cap moves from O(archive) to O(largest entry). buildEpub/zip stay for compatibility; archive-read switches to writeEpub. Shared entry encoders so both paths produce byte-identical output (pinned by test).",
+      "status": "merged",
+      "change": "New writeZip/writeEpub stream the archive to disk entry-by-entry (atomic .part + rename) instead of materializing the whole EPUB in memory — peak moves from O(archive) to O(largest entry). zip()/buildEpub stay with byte-identical output (pinned by test); archiveReadable now writes via writeEpub; entriesFor/writeZip/writeEpub are exported from the library index.",
       "metrics": [
         {
-          "name": "peak RSS producing 12.7 MB EPUB",
-          "before": 80,
-          "after": null,
+          "name": "peak RSS producing 12.7 MB EPUB (writeZip vs zip)",
+          "before": 82,
+          "after": 71,
           "unit": " MB",
+          "direction": "lower"
+        },
+        {
+          "name": "same, vs the 108 MB the campaign started from",
+          "before": 108,
+          "after": 71,
+          "unit": " MB",
+          "direction": "lower"
+        },
+        {
+          "name": "wall time for that EPUB (zip → writeZip)",
+          "before": 10,
+          "after": 15,
+          "unit": " ms",
           "direction": "lower"
         }
       ],
       "tradeoffs": [
-        "Async API for the write path; archive size known only after the write",
-        "Follow-up identified, not in scope: page/asset body arrays still hold the decoded content — a lazy from-disk loader would halve the remaining resident set"
+        "Streaming is ~1.5× slower in wall time than one big memcpy — trivial in absolute terms (~15 ms) — and the RAM saving scales with archive size",
+        "Archive size is known only after the write; the write path is async",
+        "Follow-up identified, not in scope: page/asset body arrays still hold decoded content in RAM while assembling — a lazy from-disk loader (zipChunks already accepts async sources) would cut the remaining resident set"
       ],
       "files": [
         "src/epub.mjs",
-        "src/archive-read.mjs"
+        "src/archive-read.mjs",
+        "src/index.mjs"
       ]
     },
     {
@@ -400,6 +416,40 @@
         "Rejected: nothing to parallelize without violating the chip protocol's ordering; per-invocation cost is already amortized by the session cache. Recorded so the surface isn't re-swept without new information."
       ],
       "files": []
+    },
+    {
+      "id": "W15",
+      "name": "End-to-end archive tests against a simulated OverDrive",
+      "area": "all · correctness",
+      "status": "merged",
+      "change": "New e2e suite drives the REAL orchestrators (archiveAudiobook / archiveReadable) through loan open → session handshake → openbook decode → downloads → EPUB/sidecars → integrity manifest against three local TLS hosts serving the genuine wire formats (scrambled window.eData player pages, __bif_cfc1 page bodies, CDN-style part redirects). Only the credential boundary (authenticate/sentry) is stubbed. Building it flushed out two real bugs: CookieJar and jsonRequest silently mis-connected when a host carried an explicit port (both now parse host:port), and it caught the W13 sticky-regex quote bug the day it was written. Thunder got a LIBBY_THUNDER_HOST test seam.",
+      "metrics": [
+        {
+          "name": "tests",
+          "before": 52,
+          "after": 59,
+          "unit": "",
+          "direction": "higher"
+        },
+        {
+          "name": "archive flows covered end-to-end",
+          "before": 0,
+          "after": 2,
+          "unit": "",
+          "direction": "higher"
+        }
+      ],
+      "tradeoffs": [
+        "One-line test seam in metadata.mjs (env-overridable Thunder host) — production default unchanged",
+        "Tests skip gracefully when openssl is unavailable"
+      ],
+      "files": [
+        "test/e2e.test.mjs",
+        "test/helpers/overdrive-sim.mjs",
+        "src/openbook.mjs",
+        "src/http.mjs",
+        "src/metadata.mjs"
+      ]
     }
   ],
   "baseline": {
@@ -445,10 +495,10 @@
     }
   },
   "adoption": [
-    "Everything lives on branch <code>perf-trial-20260906-030748</code> (hub), merged from lane branches <code>-cpu</code> and <code>-net</code>; each wave is an independent commit so any piece can be adopted or dropped alone. <code>main</code> is untouched.",
-    "To adopt everything: <code>git merge perf-trial-20260906-030748</code> from main (fast-forward). package.json engines is now <code>&gt;=20.15</code> (zlib.crc32).",
-    "Behavioral deltas to be aware of: EPUB bytes differ from baseline by design (stored media, level-6 text) but remain spec-valid and ~0.2% smaller; page/asset log lines now report completions rather than starts; anything else is byte-identical (manifests, decoded content).",
-    "Reproducible: <code>node --test</code> (52), <code>node --expose-gc perf/bench.mjs</code>, <code>node perf/net-sim.mjs src current</code>. Lane notes: perf-notes-cpu.md / perf-notes-net.md in the respective worktrees."
+    "Everything from both waves lives on branch <code>perf-trial-20260906-083640</code> (branched from wave-1 tip 03d0921, which holds waves W1–W11). Each wave is an independent commit; <code>main</code> is untouched.",
+    "To adopt everything: <code>git merge perf-trial-20260906-083640</code> from main (fast-forward). package.json engines is now <code>&gt;=20.15</code> (zlib.crc32).",
+    "Behavioral deltas: EPUB bytes differ from baseline by design (stored media, level-6 text) but stay spec-valid and ~0.2% smaller; the EPUB write path is async (writeEpub); page/asset logs report completions; everything else is byte-identical (manifests, decoded content).",
+    "Reproducible: <code>node --test</code> (59), <code>node --expose-gc perf/bench.mjs</code>, <code>node perf/net-sim.mjs src current</code>, <code>node --expose-gc perf/zip-stream-one.mjs zip|writeZip</code>. Lane notes: perf-notes-cpu.md / perf-notes-net.md / perf-notes-ram.md."
   ],
   "log": [
     {
@@ -482,6 +532,14 @@
     {
       "t": "08:36",
       "entry": "Wave 2 opened (goal re-issued): worktrees perf-trial-20260906-083640{,-ram} branched from wave-1 tip (03d0921). W13 openbook decode merged (49.5→20.2 ms, 2.5×, outputs identical). W14 auth/checkout examined, rejected (protocol-ordered + session-cached). W12 streaming EPUB writer in progress (subagent)."
+    },
+    {
+      "t": "09:05",
+      "entry": "W12 landed from lane: writeZip/writeEpub streaming writer (byte-identical output, RSS 82→71 MB on the synthetic book), merged to wave-2 hub; e2e suite (W15) green through the streaming path — 59/59."
+    },
+    {
+      "t": "09:20",
+      "entry": "Wave 2 closed: 3 merged (W12, W13, W15), 1 rejected (W14). Everything lives on perf-trial-20260906-083640 (contains wave 1 + wave 2, linear history)."
     }
   ]
 }
