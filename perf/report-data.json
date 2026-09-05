@@ -14,7 +14,7 @@
     "node": "v26.7.0",
     "cpu": "Apple M4"
   },
-  "rendered": "2026-09-06 11:12",
+  "rendered": "2026-09-06 11:16",
   "tldr": [
     {
       "value": "27×",
@@ -94,7 +94,7 @@
         }
       ],
       "tradeoffs": [
-        "A mislabeled media file (a .jpg that is really uncompressed data) would now be carried raw — in practice scan assets are real JPEGs, and the whole EPUB came out ~0.2% SMALLER than baseline (no deflate overhead on incompressible bytes)",
+        "A mislabeled media file (a .jpg that is really uncompressed data) would now be carried raw — in practice scan assets are real JPEGs, and the whole EPUB came out 0.02% smaller than baseline (2.9 KB on the 12.7 MB bench EPUB — no deflate overhead on incompressible bytes, slightly looser text at level 6)",
         "EPUB readers accept stored entries (spec-compliant); unzip -t clean, and now asserted in test/epub-integrity.test.mjs"
       ],
       "files": [
@@ -745,7 +745,7 @@
   "adoption": [
     "Everything from all waves lives on branch <code>perf-trial-20260906-104548</code> (linear history: waves W1–W25). Each wave is an independent commit; <code>main</code> is untouched.",
     "To adopt everything: <code>git merge perf-trial-20260906-104548</code> from main (fast-forward). package.json engines is <code>&gt;=20.15</code> (zlib.crc32).",
-    "Behavioral deltas: EPUB bytes differ from baseline by design (stored media, level-6 text) but stay spec-valid and ~0.2% smaller; the EPUB write path is async (writeEpub); raw sidecar write order shifted with W20; catalog logs may interleave with download logs; libby info now issues its two catalog calls concurrently; everything else is byte-identical (manifests, decoded content).",
+    "Behavioral deltas: EPUB bytes differ from baseline by design (stored media, level-6 text) but stay spec-valid and 0.02% smaller (2.9 KB on 12.7 MB); the EPUB write path is async (writeEpub); raw sidecar write order shifted with W20; catalog logs may interleave with download logs; libby info now issues its two catalog calls concurrently; everything else is byte-identical (manifests, decoded content).",
     "Reproducible: <code>node --test</code> (72), <code>node --expose-gc perf/bench.mjs</code>, <code>node perf/net-sim.mjs src current</code>, <code>node --expose-gc perf/zip-stream-one.mjs zip|writeZip</code>, <code>node --expose-gc perf/zip-thunk-one.mjs prepare</code>, <code>node perf/loop-showdown.mjs</code>. Lane notes: perf-notes-{cpu,net,ram,w16,orch,loops}.md."
   ],
   "log": [
@@ -767,7 +767,7 @@
     },
     {
       "t": "03:31",
-      "entry": "CPU lane complete (receipt: zip 189→5 ms fresh-process, cfc1 60→8.6 ms, manifest identical). Both lanes merged into hub; engines bumped to >=20.15; 39/39 tests green; merged bench: zip 27×, RSS −26%, EPUB 0.2% smaller."
+      "entry": "CPU lane complete (receipt: zip 189→5 ms fresh-process, cfc1 60→8.6 ms, manifest identical). Both lanes merged into hub; engines bumped to >=20.15; 39/39 tests green; merged bench: zip 27×, RSS −26%, EPUB 0.02% smaller (12,685,676 → 12,682,772 B)."
     },
     {
       "t": "03:44",
