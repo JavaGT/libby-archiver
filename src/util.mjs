@@ -99,9 +99,28 @@ export function writeFileAtomic(file, data, { mode } = {}) {
   if (mode != null) fs.chmodSync(file, mode);
 }
 
+// JSON sidecars go through temp-file + rename: a crash mid-write must never leave
+// a truncated record masquerading as a complete one.
+
 export function writeJson(file, data, { secret = false } = {}) {
-  fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
+  writeFileAtomic(file, JSON.stringify(data, null, 2), secret ? { mode: 0o600 } : {});
   if (secret) fs.chmodSync(file, 0o600); // passport/loan sidecars carry credentials
+}
+
+/**
+ * Generator provenance for archive sidecars: which tool version produced the
+ * folder. Read once from the package manifest; `unknown` if unreadable.
+ */
+let generator;
+export function generatorInfo() {
+  generator ??= (() => {
+    try {
+      return JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+    } catch {
+      return {};
+    }
+  })();
+  return { name: 'libby-archiver', version: generator.version ?? 'unknown' };
 }
 
 /**

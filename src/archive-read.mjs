@@ -34,6 +34,7 @@ import {
   writeManifest,
   cleanDescription,
   extractIsbns,
+  generatorInfo,
 } from './util.mjs';
 
 /**
@@ -163,10 +164,14 @@ export async function archiveReadable(ctx, loan, outDir) {
 
   // 7. normalized metadata + integrity + README — the EPUB was hashed while streaming
   // (writeZip), so the manifest skips re-reading it; for a big magazine that is the
-  // largest file in the archive. The rel path is the EPUB's basename.
+  // largest file in the archive. The rel path is the EPUB's basename. README is
+  // written first so the manifest covers it too.
   writeJson(path.join(bookDir, 'metadata.json'), {
     titleId: loan.id,
     cardId: loan.cardId,
+    library: cfg.library,
+    libraryName: cfg.libraryName ?? cfg.library,
+    generator: generatorInfo(),
     type: loan.type,
     title: openbook.title?.main ?? loan.title,
     subtitle: openbook.title?.subtitle || loan.subtitle,
@@ -182,8 +187,8 @@ export async function archiveReadable(ctx, loan, outDir) {
     expires: loan.expires,
     archivedAt: new Date().toISOString(),
   });
-  await writeManifest(bookDir, { known: { [epubName]: sha256 } });
   fs.writeFileSync(path.join(bookDir, 'README.txt'), readmeText(loan, spine.length, assetEntries.length), 'utf8');
+  await writeManifest(bookDir, { known: { [epubName]: sha256 } });
 
   log(`   done: ${bookDir}`);
   return bookDir;

@@ -28,6 +28,7 @@ import {
   decodeEntities,
   cleanDescription,
   extractIsbns,
+  generatorInfo,
 } from './util.mjs';
 
 /**
@@ -115,10 +116,16 @@ export async function archiveAudiobook(ctx, loan, outDir) {
   const chapters = (openbook.nav?.toc ?? []).map((c) => ({
     title: decodeEntities(c.title),
     part: spineToIndex.indexOf((c.path || '').split('#')[0]) + 1 || null,
+    // toc paths carry the chapter start time in the URL fragment (e.g.
+    // "#0.00000-119.00000") — kept verbatim so future remuxing loses nothing
+    offset: (c.path || '').split('#')[1] || null,
   }));
   writeJson(path.join(bookDir, 'metadata.json'), {
     titleId: loan.id,
     cardId: loan.cardId,
+    library: cfg.library,
+    libraryName: cfg.libraryName ?? cfg.library,
+    generator: generatorInfo(),
     title: openbook.title?.main ?? loan.title,
     subtitle: openbook.title?.subtitle ?? loan.subtitle,
     author: roleNames(/author/i).join(', ') || loan.author,
@@ -135,15 +142,16 @@ export async function archiveAudiobook(ctx, loan, outDir) {
     archivedAt: new Date().toISOString(),
   });
 
-  // 7. integrity manifest + README — parts arrive pre-hashed (step 5) and the cover is
+  // 7. integrity manifest + README — README is written first so the manifest covers
+  // every file in the folder; parts arrive pre-hashed (step 5) and the cover is
   // settled (step 4), so only the small sidecars are re-read here
   await coverP; // cover.jpg must be complete before it is hashed
-  await writeManifest(bookDir, { known: partHashes });
   fs.writeFileSync(
     path.join(bookDir, 'README.txt'),
     readmeText(loan, spine.length),
     'utf8',
   );
+  await writeManifest(bookDir, { known: partHashes });
 
   log(`   done: ${bookDir}`);
   return bookDir;

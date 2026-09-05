@@ -49,10 +49,9 @@ if (!sim) {
       return fs.statSync(full).isDirectory() ? walkFiles(full, r) : [r];
     });
 
-  const assertManifestCovers = (bookDir, { except = [] } = {}) => {
+  const assertManifestCovers = (bookDir) => {
     const lines = fs.readFileSync(path.join(bookDir, 'manifest.sha256'), 'utf8').trim().split('\n');
-    // The manifest is written before README.txt, so README is not hashed (pre-existing order).
-    const rels = walkFiles(bookDir).filter((r) => r !== 'manifest.sha256' && !except.includes(r));
+    const rels = walkFiles(bookDir).filter((r) => r !== 'manifest.sha256');
     assert.deepEqual(lines.map((l) => l.split('  ')[1]).sort(), rels.sort());
     for (const line of lines) {
       const [hash, rel] = line.split('  ');
@@ -107,7 +106,11 @@ if (!sim) {
       assert.equal(meta.title, 'E2E Audiobook');
       assert.equal(meta.author, 'A. Author');
       assert.deepEqual(meta.narrators, ['N. Narrator']);
-      assert.deepEqual(meta.chapters, [{ title: 'Chapter 1', part: 1 }]);
+      assert.deepEqual(meta.chapters, [{ title: 'Chapter 1', part: 1, offset: '0.00000-119.00000' }]);
+    assert.equal(meta.library, 'testlib');
+    assert.equal(meta.libraryName, 'Test Library');
+    assert.equal(meta.generator.name, 'libby-archiver');
+    assert.match(meta.generator.version, /^\d+\.\d+\.\d+/);
       assert.equal(meta.durationSeconds, 600 + 601 + 602);
       assert.deepEqual(meta.isbns, ['978-0-000-00000-1']);
       assert.equal(meta.publisher, 'Test Press');
@@ -115,7 +118,7 @@ if (!sim) {
 
       assert.ok(fs.existsSync(path.join(bookDir, 'README.txt')));
       assert.ok(fs.existsSync(path.join(bookDir, 'thunder.json')));
-      assertManifestCovers(bookDir, { except: ['README.txt'] });
+      assertManifestCovers(bookDir); // every file, README.txt included
     } finally {
       fs.rmSync(out, { recursive: true, force: true });
     }
@@ -167,8 +170,10 @@ if (!sim) {
       assert.equal(meta.pages, 2);
       assert.equal(meta.assets, 1);
       assert.equal(meta.publisher, 'Test Press'); // from openbook creator role pbl
+    assert.equal(meta.library, 'testlib');
+    assert.equal(meta.generator.name, 'libby-archiver');
 
-      assertManifestCovers(bookDir, { except: ['README.txt'] });
+      assertManifestCovers(bookDir); // every file, README.txt included
     } finally {
       fs.rmSync(out, { recursive: true, force: true });
     }

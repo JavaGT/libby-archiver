@@ -88,7 +88,7 @@ export function audiobookOpenbook() {
       ],
       spine: parts,
       '-odread-cmpt-params': parts.map((_, i) => `cmpt=${i}`),
-      'nav': { toc: [{ title: 'Chapter 1', path: 'res/part1.mp3' }] },
+      'nav': { toc: [{ title: 'Chapter 1', path: 'res/part1.mp3#0.00000-119.00000' }] },
     },
   };
 }
