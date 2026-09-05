@@ -11,6 +11,8 @@
 import https from 'node:https';
 import { deterministicBytes, selfSignedCert } from './sim-server.mjs';
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 /** The listen/read buid the app derives from a sim hostname, and its scramble key. */
 export function scrambleKeyFor(webUrl) {
   const host = new URL(webUrl).host;
@@ -230,13 +232,30 @@ export async function startOverdriveSim() {
       handler: ({ res, url }) => {
         const record = {
           id: url.pathname.match(/media\/(\d+)/)[1],
+          title: 'E2E Audiobook',
+          subtitle: 'A Simulated Saga',
+          firstCreatorName: 'A. Author',
+          type: { id: 'audiobook' },
           publisher: { name: 'Test Press' },
           subjects: [{ name: 'space' }, { name: 'testing' }],
           formats: [{ id: 'audiobook', identifiers: [{ type: 'ISBN', value: '978-0-000-00000-1' }] }],
           covers: { a: { href: `${catalog.url}/covers/big.jpg`, width: 800 } },
         };
-        res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify(record));
+        // fixed 100 ms think-time: makes serial-vs-parallel catalog fetches measurable
+        sleep(100).then(() => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify(record));
+        });
+      },
+    },
+    {
+      // stargazer characteristics (getTitle's second, independent round trip)
+      match: (p) => /\/characteristics\/title\/\d+$/.test(p),
+      handler: ({ res }) => {
+        sleep(100).then(() => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ characteristics: { '📚': { '🌎': ['space opera'] } } }));
+        });
       },
     },
   ]);

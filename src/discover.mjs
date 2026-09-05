@@ -12,8 +12,10 @@
 import { getJson, postJson } from './http.mjs';
 import { cleanHtml, extractIsbns } from './util.mjs';
 
-const THUNDER = 'thunder.api.overdrive.com';
-const STARGAZER = 'stargazer-cache.libbyapp.com';
+// Hosts are env-overridable so end-to-end tests can point the catalog at a local
+// sim (values carry `host` or `host:port`).
+const THUNDER = process.env.LIBBY_THUNDER_HOST || 'thunder.api.overdrive.com';
+const STARGAZER = process.env.LIBBY_STARGAZER_HOST || 'stargazer-cache.libbyapp.com';
 const AVAILABILITY_CHUNK = 100; // Thunder caps ids per availability request
 
 /**
@@ -56,20 +58,21 @@ function normalizeAvailability(a) {
 
 /**
  * Full catalog detail for a single title, optionally enriched with characteristics.
+ * The catalog record and the stargazer characteristics are independent — fetched
+ * concurrently — so `libby info` pays one round trip instead of two.
  * @returns {Promise<TitleDetail>}
  */
 export async function getTitle(library, id, { insecureTLS = false, characteristics = true } = {}) {
   const path = `/v2/libraries/${encodeURIComponent(library)}/media/${encodeURIComponent(id)}?x-client-id=dewey`;
-  const res = await getJson(THUNDER, path, { insecureTLS });
+  const [res, tags] = await Promise.all([
+    getJson(THUNDER, path, { insecureTLS }),
+    characteristics
+      ? getCharacteristics(library, id, { insecureTLS }).catch(() => [])
+      : Promise.resolve([]),
+  ]);
   if (res.status !== 200) throw new Error(`title lookup failed: HTTP ${res.status}`);
   const detail = normalizeTitle(res.json);
-  if (characteristics) {
-    try {
-      detail.characteristics = await getCharacteristics(library, id, { insecureTLS });
-    } catch {
-      detail.characteristics = [];
-    }
-  }
+  detail.characteristics = tags;
   return detail;
 }
 
