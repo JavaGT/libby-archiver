@@ -70,6 +70,52 @@ test('writeManifest hashes everything except itself and .part temp files', async
   }
 });
 
+test('writeManifest output is byte-identical when hashing concurrently', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libby-manifest2-'));
+  try {
+    // >8 files (worker pool engages), a nested dir, a >1 MiB file (spans several
+    // highWaterMark reads), and files that must be excluded.
+    const big = Buffer.alloc(2.5 * 1024 * 1024);
+    for (let i = 0; i < big.length; i++) big[i] = i & 0xff; // deterministic content
+    fs.writeFileSync(path.join(dir, 'big.bin'), big);
+    fs.mkdirSync(path.join(dir, 'pages'));
+    fs.mkdirSync(path.join(dir, 'pages', 'sub'));
+    fs.writeFileSync(path.join(dir, 'pages', '9.xhtml'), '<p>nine</p>');
+    fs.writeFileSync(path.join(dir, 'pages', '1.xhtml'), '<p>one</p>');
+    fs.writeFileSync(path.join(dir, 'pages', 'sub', 'n.dat'), Buffer.from([0, 1, 2, 255]));
+    for (const n of ['a.mp3', 'b.mp3', 'c.mp3', 'd.mp3', 'e.mp3', 'f.mp3', 'g.mp3', 'h.mp3', 'i.mp3']) {
+      fs.writeFileSync(path.join(dir, n), `payload-${n}`);
+    }
+    fs.writeFileSync(path.join(dir, 'junk.mp3.part'), 'partial garbage');
+
+    await writeManifest(dir);
+
+    // Expected built independently: depth-first walk, per-directory lexicographic order.
+    const entries = [
+      ['a.mp3', 'payload-a.mp3'],
+      ['b.mp3', 'payload-b.mp3'],
+      ['big.bin', big],
+      ['c.mp3', 'payload-c.mp3'],
+      ['d.mp3', 'payload-d.mp3'],
+      ['e.mp3', 'payload-e.mp3'],
+      ['f.mp3', 'payload-f.mp3'],
+      ['g.mp3', 'payload-g.mp3'],
+      ['h.mp3', 'payload-h.mp3'],
+      ['i.mp3', 'payload-i.mp3'],
+      ['pages/1.xhtml', '<p>one</p>'],
+      ['pages/9.xhtml', '<p>nine</p>'],
+      ['pages/sub/n.dat', Buffer.from([0, 1, 2, 255])],
+    ];
+    const expected =
+      entries
+        .map(([r, content]) => `${crypto.createHash('sha256').update(content).digest('hex')}  ${r}`)
+        .join('\n') + '\n';
+    assert.equal(fs.readFileSync(path.join(dir, 'manifest.sha256'), 'utf8'), expected);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('claimBookDir resumes the same loan folder but separates colliding loans', () => {
   const out = fs.mkdtempSync(path.join(os.tmpdir(), 'libby-claim-'));
   try {
