@@ -81,10 +81,13 @@ export function zip(entries) {
   }
 
   out.writeUInt32LE(0x06054b50, c);
+  out.writeUInt16LE(0, c + 4); // this disk
+  out.writeUInt16LE(0, c + 6); // disk with central directory
   out.writeUInt16LE(entries.length, c + 8);
   out.writeUInt16LE(entries.length, c + 10);
   out.writeUInt32LE(dirSize, c + 12);
   out.writeUInt32LE(dataEnd, c + 16);
+  out.writeUInt16LE(0, c + 20); // comment length
   return out;
 }
 

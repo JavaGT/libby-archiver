@@ -7,6 +7,9 @@ import { zip, buildEpub } from '../src/epub.mjs';
 function parseZip(buf) {
   const eocd = buf.length - 22;
   assert.equal(buf.readUInt32LE(eocd), 0x06054b50, 'missing end-of-central-directory');
+  assert.equal(buf.readUInt16LE(eocd + 4), 0, 'EOCD disk number must be 0');
+  assert.equal(buf.readUInt16LE(eocd + 6), 0, 'EOCD central-directory disk must be 0');
+  assert.equal(buf.readUInt16LE(eocd + 20), 0, 'EOCD comment length must be 0');
   const count = buf.readUInt16LE(eocd + 10);
   let p = buf.readUInt32LE(eocd + 16);
   const entries = [];
