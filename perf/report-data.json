@@ -510,6 +510,36 @@
         "src/archive.mjs",
         "test/manifest-ref.test.mjs"
       ]
+    },
+    {
+      "id": "W19",
+      "name": "Compact raw sidecars (storage)",
+      "area": "library · storage",
+      "status": "rejected",
+      "change": "Considered minifying the raw machine sidecars (openbook.json, thunder.json, passport.json, loan.json) instead of pretty-printing them. Measured on realistically-shaped records: the big one barely benefits.",
+      "metrics": [
+        {
+          "name": "openbook.json at magazine scale (~1.9 MB, bulk = one description string)",
+          "before": 1801847,
+          "after": 1774855,
+          "unit": " B",
+          "direction": "lower"
+        },
+        {
+          "name": "thunder.json (rich catalog record, 45% smaller but only KBs)",
+          "before": 5692,
+          "after": 3134,
+          "unit": " B",
+          "direction": "lower"
+        }
+      ],
+      "tradeoffs": [
+        "Rejected: ~1% on the only large sidecar (its bulk is a whitespace-free payload string; indent only costs on structure) and KBs elsewhere — tens of KB per archive, not worth losing human-readable provenance records",
+        "Measurement kept: perf/storage-sidecars.mjs; helper reverted before merge"
+      ],
+      "files": [
+        "perf/storage-sidecars.mjs"
+      ]
     }
   ],
   "baseline": {
@@ -608,6 +638,10 @@
     {
       "t": "10:02",
       "entry": "W16 merged: disk-backed EPUB payloads (bench 69→55 MB, bytes identical, wall equal; lane also fixed a pre-existing dcterms:modified clock flake in the byte-identity pin). Wave 3 suite 64/64."
+    },
+    {
+      "t": "10:48",
+      "entry": "W19 (compact sidecars) measured and rejected — ~1% on the large sidecar. One unreproduced suite transient observed once during reverts (5+ consecutive clean 64/64 runs since). W18+W20 orchestration lane in flight."
     }
   ]
 }
