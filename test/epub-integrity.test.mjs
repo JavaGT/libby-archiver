@@ -15,6 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import zlib from 'node:zlib';
+import { createHash } from 'node:crypto';
 import { buildEpub, zip, entriesFor, writeZip, writeEpub } from '../src/epub.mjs';
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'libby-epub-'));
@@ -174,6 +175,26 @@ test('writeZip leaves no .part behind — after success and after a mid-write fa
     await assert.rejects(() => writeZip(flaky(), bad), /injected mid-write failure/);
     assert.equal(fs.existsSync(bad), false, 'no partial archive left at the target path');
     assert.equal(fs.existsSync(`${bad}.part`), false, '.part removed on failure');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The streamed digest exists so callers can feed writeManifest's `known` instead of
+// re-reading the finished EPUB — it must be exactly the hash of the bytes on disk.
+test('writeZip/writeEpub return the sha256 of the exact bytes written', async () => {
+  const dir = tmp();
+  try {
+    const file = path.join(dir, 'book.epub');
+    const { bytes, sha256 } = await writeZip(entriesFor(book()), file);
+    const written = fs.readFileSync(file);
+    assert.equal(bytes, written.length, '{ bytes } must match the file size');
+    assert.equal(sha256, createHash('sha256').update(written).digest('hex'), 'digest must equal a fresh re-hash of the file');
+
+    const epubFile = path.join(dir, 'via-writeEpub.epub');
+    const res = await writeEpub(book(), epubFile);
+    assert.equal(res.bytes, fs.statSync(epubFile).size, 'writeEpub passes bytes through');
+    assert.equal(res.sha256, createHash('sha256').update(fs.readFileSync(epubFile)).digest('hex'), 'writeEpub passes the digest through');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

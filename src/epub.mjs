@@ -12,6 +12,7 @@
 
 import fs from 'node:fs';
 import zlib from 'node:zlib';
+import { createHash } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 
 // ---- minimal ZIP (store + deflate) --------------------------------------------
@@ -174,16 +175,21 @@ async function* zipChunks(entries) {
  * entry. Written to `outPath + '.part'` and renamed into place atomically on success
  * (mirrors util.writeFileAtomic); the .part is removed on any failure.
  * @param {Iterable|AsyncIterable} entries {name, data, store?} entries (async sources stream in)
- * @returns {Promise<{bytes:number}>} total archive size
+ * @returns {Promise<{bytes:number, sha256:string}>} total archive size and the hex sha256
+ *   of the exact bytes written — hashed in passing as chunks stream out (hardware SHA,
+ *   ~GB/s, negligible next to deflate) so callers can feed writeManifest's `known`
+ *   instead of re-reading the finished file
  */
 export async function writeZip(entries, outPath) {
   const partPath = `${outPath}.part`;
   let bytes = 0;
+  const hash = createHash('sha256'); // every yielded chunk is one written to the file
   try {
     await pipeline(
       async function* () {
         for await (const chunk of zipChunks(entries)) {
           bytes += chunk.length;
+          hash.update(chunk);
           yield chunk;
         }
       }(),
@@ -194,7 +200,7 @@ export async function writeZip(entries, outPath) {
     await fs.promises.rm(partPath, { force: true }); // never leave a partial file behind
     throw e;
   }
-  return { bytes };
+  return { bytes, sha256: hash.digest('hex') };
 }
 
 // ---- EPUB assembly ------------------------------------------------------------
