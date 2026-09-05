@@ -131,10 +131,13 @@ test('writeZip output is byte-identical to zip() (shared encoders — the strong
   const dir = tmp();
   try {
     const file = path.join(dir, 'book.epub');
-    const { bytes } = await writeZip(entriesFor(book()), file);
+    // one entry list through both writers: entriesFor() stamps dcterms:modified at
+    // whole-second precision, so building it twice would flake across a second boundary
+    const entries = entriesFor(book());
+    const { bytes } = await writeZip(entries, file);
     const streamed = fs.readFileSync(file);
     assert.equal(bytes, streamed.length, 'reported byte count must match the file');
-    assert.ok(streamed.equals(buildEpub(book())), 'streamed bytes must equal the in-memory buffer');
+    assert.ok(streamed.equals(zip(entries)), 'streamed bytes must equal the in-memory buffer');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
