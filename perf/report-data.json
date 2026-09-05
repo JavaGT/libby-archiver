@@ -14,7 +14,7 @@
     "node": "v26.7.0",
     "cpu": "Apple M4"
   },
-  "rendered": "2026-09-06 10:41",
+  "rendered": "2026-09-06 10:46",
   "tldr": [
     {
       "value": "27×",
@@ -589,6 +589,27 @@
         "src/archive.mjs",
         "src/archive-read.mjs"
       ]
+    },
+    {
+      "id": "W21",
+      "name": "Cross-loan parallel archiving (archive --all)",
+      "area": "interface · wall-clock",
+      "status": "rejected",
+      "change": "Considered archiving 2 loans at a time instead of strictly sequentially. Rejected without implementation: OverDrive rate-limits aggressively (the CLI already special-cases the whoa response and exits), multi-loan parallelism multiplies request bursts per card, and the risk cannot be validated offline — the simulated hosts cannot reproduce server-side throttling.",
+      "metrics": [
+        {
+          "name": "accepted",
+          "before": 0,
+          "after": 0,
+          "unit": "",
+          "direction": "lower"
+        }
+      ],
+      "tradeoffs": [
+        "The safe wins (per-loan concurrency W8/W9, pooling W7, overlap W20) capture most of the wall-clock upside without touching card-level request rates",
+        "If the owner ever wants it: make the loan-level concurrency an opt-in flag, default 1, and validate against a real shelf"
+      ],
+      "files": []
     }
   ],
   "baseline": {
@@ -695,6 +716,10 @@
     {
       "t": "10:41",
       "entry": "W18+W20 merged from lane: streamed EPUB digest into the manifest + catalog round trips overlapped with downloads. Wave 4 suite 65/65, e2e acceptance green."
+    },
+    {
+      "t": "10:46",
+      "entry": "Closing soak: 10 consecutive full-suite runs, 0 failures (plus the earlier unreproduced transient — 15+ clean runs total since). W21 (cross-loan parallelism) considered and rejected: OverDrive rate-limit risk, not validable offline. Campaign closed at 10:46, ahead of the 12:00 stop."
     }
   ]
 }
