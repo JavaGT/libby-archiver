@@ -1,10 +1,16 @@
 // Assemble a decoded read-host title (pages + assets) into an EPUB 3, with a tiny
 // dependency-free ZIP writer (the mimetype entry is stored first, uncompressed, per spec).
 //
+// Two output paths share one encoder: zip() / buildEpub() return the archive as a single
+// Buffer; writeZip() / writeEpub() stream the identical bytes to disk, holding only the
+// largest entry's payload in memory at a time.
+//
 // Fixed-layout (magazines / pre-paginated ebooks) get rendition:layout=pre-paginated and a
 // per-page viewport so the SVG scans render at their true size; reflowable ebooks omit it.
 
+import fs from 'node:fs';
 import zlib from 'node:zlib';
+import { pipeline } from 'node:stream/promises';
 
 // ---- minimal ZIP (store + deflate) --------------------------------------------
 // Note: zlib.crc32 needs Node >= 20.15 (engines floor raised from >= 20).
@@ -12,83 +18,170 @@ import zlib from 'node:zlib';
 /** Payloads that are already compressed — deflate gains nothing, so they are stored verbatim. */
 const STORE_EXT = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'mp3', 'mp4', 'm4a', 'pdf']);
 
+const LOCAL_HDR_LEN = 30; // local file header
+const CD_HDR_LEN = 46; // central directory record
+const EOCD_LEN = 22; // end of central directory
+
+/** Encode one entry: utf8 name, native CRC, and the compressed payload (stored where useless). */
+function encodeEntry(e) {
+  const nameBuf = Buffer.from(e.name, 'utf8');
+  const raw = Buffer.isBuffer(e.data) ? e.data : Buffer.from(e.data, 'utf8');
+  const store = e.store || raw.length === 0 || STORE_EXT.has(e.name.split('.').pop().toLowerCase());
+  // level 6 over 9: ~2x faster, within ~2% on text (xhtml/opf/ncx) — deliberate tradeoff
+  const comp = store ? raw : zlib.deflateRawSync(raw, { level: 6 });
+  return { nameBuf, comp, method: store ? 0 : 8, crc: zlib.crc32(raw), rawLen: raw.length, compLen: comp.length, offset: 0 };
+}
+
+/** Assign each entry its archive offset; returns the data-section and directory sizes. */
+function layout(parts) {
+  let dataEnd = 0;
+  let dirSize = 0;
+  for (const p of parts) {
+    p.offset = dataEnd;
+    dataEnd += LOCAL_HDR_LEN + p.nameBuf.length + p.compLen; // local header + name + payload
+    dirSize += CD_HDR_LEN + p.nameBuf.length; // central directory record + name
+  }
+  return { dataEnd, dirSize };
+}
+
+/** Local file header (30 bytes) written at `at`. */
+function putLocalHeader(out, at, p) {
+  out.writeUInt32LE(0x04034b50, at);
+  out.writeUInt16LE(20, at + 4); // version needed
+  out.writeUInt16LE(0, at + 6); // flags
+  out.writeUInt16LE(p.method, at + 8);
+  out.writeUInt16LE(0, at + 10); // mod time
+  out.writeUInt16LE(0x21, at + 12); // mod date (arbitrary, valid)
+  out.writeUInt32LE(p.crc, at + 14);
+  out.writeUInt32LE(p.compLen, at + 18);
+  out.writeUInt32LE(p.rawLen, at + 22);
+  out.writeUInt16LE(p.nameBuf.length, at + 26);
+  out.writeUInt16LE(0, at + 28); // extra len
+}
+
+/** Central directory record (46 bytes) written at `at`. */
+function putCdRecord(out, at, p) {
+  out.writeUInt32LE(0x02014b50, at);
+  out.writeUInt16LE(20, at + 4); // version made by
+  out.writeUInt16LE(20, at + 6); // version needed
+  out.writeUInt16LE(0, at + 8); // flags
+  out.writeUInt16LE(p.method, at + 10);
+  out.writeUInt16LE(0, at + 12);
+  out.writeUInt16LE(0x21, at + 14);
+  out.writeUInt32LE(p.crc, at + 16);
+  out.writeUInt32LE(p.compLen, at + 20);
+  out.writeUInt32LE(p.rawLen, at + 24);
+  out.writeUInt16LE(p.nameBuf.length, at + 28);
+  out.writeUInt16LE(0, at + 30); // extra
+  out.writeUInt16LE(0, at + 32); // comment
+  out.writeUInt16LE(0, at + 34); // disk
+  out.writeUInt16LE(0, at + 36); // internal attrs
+  out.writeUInt32LE(0, at + 38); // external attrs
+  out.writeUInt32LE(p.offset, at + 42);
+}
+
+/** End-of-central-directory record (22 bytes) written at `at`. */
+function putEocd(out, at, count, dirSize, dirStart) {
+  out.writeUInt32LE(0x06054b50, at);
+  out.writeUInt16LE(0, at + 4); // this disk
+  out.writeUInt16LE(0, at + 6); // disk with central directory
+  out.writeUInt16LE(count, at + 8);
+  out.writeUInt16LE(count, at + 10);
+  out.writeUInt32LE(dirSize, at + 12);
+  out.writeUInt32LE(dirStart, at + 16);
+  out.writeUInt16LE(0, at + 20); // comment length
+}
+
 /**
  * @param {{name:string,data:Buffer|string,store?:boolean}[]} entries
  * @returns {Buffer} the archive, assembled in one preallocated buffer
  */
 export function zip(entries) {
-  // Pass 1: encode each entry (native CRC + deflate at level 6; stored where useless) and
-  // measure the archive, so pass 2 can write into a single buffer with no concat copy.
-  const parts = entries.map((e) => {
-    const nameBuf = Buffer.from(e.name, 'utf8');
-    const raw = Buffer.isBuffer(e.data) ? e.data : Buffer.from(e.data, 'utf8');
-    const store = e.store || raw.length === 0 || STORE_EXT.has(e.name.split('.').pop().toLowerCase());
-    // level 6 over 9: ~2x faster, within ~2% on text (xhtml/opf/ncx) — deliberate tradeoff
-    const comp = store ? raw : zlib.deflateRawSync(raw, { level: 6 });
-    return { nameBuf, comp, method: store ? 0 : 8, crc: zlib.crc32(raw), rawLen: raw.length, compLen: comp.length, offset: 0 };
-  });
-
-  let dataEnd = 0;
-  let dirSize = 0;
-  for (const p of parts) {
-    p.offset = dataEnd;
-    dataEnd += 30 + p.nameBuf.length + p.comp.length; // local header + name + payload
-    dirSize += 46 + p.nameBuf.length; // central directory record + name
-  }
+  // Pass 1: encode each entry and measure the archive, so pass 2 can write into a single
+  // buffer with no concat copy.
+  const parts = entries.map(encodeEntry);
+  const { dataEnd, dirSize } = layout(parts);
 
   // Pass 2: local headers + payloads, then the central directory, then the EOCD.
   // allocUnsafe is safe: every byte below is written exactly once.
-  const out = Buffer.allocUnsafe(dataEnd + dirSize + 22);
+  const out = Buffer.allocUnsafe(dataEnd + dirSize + EOCD_LEN);
   for (const p of parts) {
-    const at = p.offset;
-    out.writeUInt32LE(0x04034b50, at);
-    out.writeUInt16LE(20, at + 4); // version needed
-    out.writeUInt16LE(0, at + 6); // flags
-    out.writeUInt16LE(p.method, at + 8);
-    out.writeUInt16LE(0, at + 10); // mod time
-    out.writeUInt16LE(0x21, at + 12); // mod date (arbitrary, valid)
-    out.writeUInt32LE(p.crc, at + 14);
-    out.writeUInt32LE(p.compLen, at + 18);
-    out.writeUInt32LE(p.rawLen, at + 22);
-    out.writeUInt16LE(p.nameBuf.length, at + 26);
-    out.writeUInt16LE(0, at + 28); // extra len
-    p.nameBuf.copy(out, at + 30);
-    p.comp.copy(out, at + 30 + p.nameBuf.length);
+    putLocalHeader(out, p.offset, p);
+    p.nameBuf.copy(out, p.offset + LOCAL_HDR_LEN);
+    p.comp.copy(out, p.offset + LOCAL_HDR_LEN + p.nameBuf.length);
     p.comp = null; // large media payloads can be collected as soon as they are copied
   }
 
   let c = dataEnd;
   for (const p of parts) {
-    out.writeUInt32LE(0x02014b50, c);
-    out.writeUInt16LE(20, c + 4); // version made by
-    out.writeUInt16LE(20, c + 6); // version needed
-    out.writeUInt16LE(0, c + 8); // flags
-    out.writeUInt16LE(p.method, c + 10);
-    out.writeUInt16LE(0, c + 12);
-    out.writeUInt16LE(0x21, c + 14);
-    out.writeUInt32LE(p.crc, c + 16);
-    out.writeUInt32LE(p.compLen, c + 20);
-    out.writeUInt32LE(p.rawLen, c + 24);
-    out.writeUInt16LE(p.nameBuf.length, c + 28);
-    out.writeUInt16LE(0, c + 30); // extra
-    out.writeUInt16LE(0, c + 32); // comment
-    out.writeUInt16LE(0, c + 34); // disk
-    out.writeUInt16LE(0, c + 36); // internal attrs
-    out.writeUInt32LE(0, c + 38); // external attrs
-    out.writeUInt32LE(p.offset, c + 42);
-    p.nameBuf.copy(out, c + 46);
-    c += 46 + p.nameBuf.length;
+    putCdRecord(out, c, p);
+    p.nameBuf.copy(out, c + CD_HDR_LEN);
+    c += CD_HDR_LEN + p.nameBuf.length;
   }
-
-  out.writeUInt32LE(0x06054b50, c);
-  out.writeUInt16LE(0, c + 4); // this disk
-  out.writeUInt16LE(0, c + 6); // disk with central directory
-  out.writeUInt16LE(entries.length, c + 8);
-  out.writeUInt16LE(entries.length, c + 10);
-  out.writeUInt32LE(dirSize, c + 12);
-  out.writeUInt32LE(dataEnd, c + 16);
-  out.writeUInt16LE(0, c + 20); // comment length
+  putEocd(out, c, parts.length, dirSize, dataEnd);
   return out;
+}
+
+/**
+ * Yield the exact byte sequence zip() produces — header, name, payload per entry, then the
+ * central directory + EOCD — so the archive can be streamed without ever holding the whole
+ * thing (or two copies of it) in memory. Each encoded payload is released once consumed.
+ * `entries` may be an array or any (async) iterable of {name, data, store?} objects.
+ */
+async function* zipChunks(entries) {
+  const dir = []; // small per-entry metadata for the central directory
+  let dataEnd = 0;
+  let dirSize = 0;
+  for await (const e of entries) {
+    const p = encodeEntry(e);
+    p.offset = dataEnd;
+    dataEnd += LOCAL_HDR_LEN + p.nameBuf.length + p.compLen;
+    dirSize += CD_HDR_LEN + p.nameBuf.length;
+    const head = Buffer.allocUnsafe(LOCAL_HDR_LEN);
+    putLocalHeader(head, 0, p);
+    yield head;
+    yield p.nameBuf;
+    yield p.comp;
+    p.comp = null; // payload handed to the consumer — the largest entry no longer stays resident
+    dir.push(p);
+  }
+  for (const p of dir) {
+    const rec = Buffer.allocUnsafe(CD_HDR_LEN);
+    putCdRecord(rec, 0, p);
+    yield rec;
+    yield p.nameBuf;
+  }
+  const tail = Buffer.allocUnsafe(EOCD_LEN);
+  putEocd(tail, 0, dir.length, dirSize, dataEnd);
+  yield tail;
+}
+
+/**
+ * Stream the same bytes zip() would return to `outPath`, capping memory at the largest
+ * entry. Written to `outPath + '.part'` and renamed into place atomically on success
+ * (mirrors util.writeFileAtomic); the .part is removed on any failure.
+ * @param {Iterable|AsyncIterable} entries {name, data, store?} entries (async sources stream in)
+ * @returns {Promise<{bytes:number}>} total archive size
+ */
+export async function writeZip(entries, outPath) {
+  const partPath = `${outPath}.part`;
+  let bytes = 0;
+  try {
+    await pipeline(
+      async function* () {
+        for await (const chunk of zipChunks(entries)) {
+          bytes += chunk.length;
+          yield chunk;
+        }
+      }(),
+      fs.createWriteStream(partPath),
+    );
+    await fs.promises.rename(partPath, outPath);
+  } catch (e) {
+    await fs.promises.rm(partPath, { force: true }); // never leave a partial file behind
+    throw e;
+  }
+  return { bytes };
 }
 
 // ---- EPUB assembly ------------------------------------------------------------
@@ -136,6 +229,9 @@ function wrapPage(body, { viewport } = {}) {
 }
 
 /**
+ * Ordered EPUB entry list (mimetype first, container.xml, pages, assets, cover, nav.xhtml,
+ * toc.ncx, content.opf) — the single source of truth for assembly, shared by buildEpub()
+ * and writeEpub().
  * @param {object} book
  * @param {{title:string,subtitle?:string,creator?:string,language?:string,description?:string,identifier:string}} book.meta
  * @param {{path:string,body:string,viewport?:{width:number,height:number}}[]} book.spine  decoded page bodies
@@ -143,9 +239,9 @@ function wrapPage(body, { viewport } = {}) {
  * @param {{path:string,data:Buffer}|null} [book.cover]
  * @param {{title:string,href:string}[]} [book.nav]  TOC entries (href = a spine path)
  * @param {boolean} [book.fixedLayout]
- * @returns {Buffer} the .epub
+ * @returns {{name:string,data:Buffer|string,store?:boolean}[]}
  */
-export function buildEpub(book) {
+export function entriesFor(book) {
   const { meta, spine, assets = [], cover = null, nav = [], fixedLayout = false } = book;
   const used = new Set();
   const modified = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
@@ -246,5 +342,15 @@ export function buildEpub(book) {
       `</package>\n`,
   });
 
-  return zip(files);
+  return files;
+}
+
+/** @returns {Buffer} the .epub, assembled in memory */
+export function buildEpub(book) {
+  return zip(entriesFor(book));
+}
+
+/** Stream the .epub to `outPath` (see writeZip) instead of materializing it in memory. */
+export function writeEpub(book, outPath) {
+  return writeZip(entriesFor(book), outPath);
 }
