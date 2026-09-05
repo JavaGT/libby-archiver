@@ -14,31 +14,34 @@
     "node": "v26.7.0",
     "cpu": "Apple M4"
   },
-  "rendered": "2026-09-06 03:15",
+  "rendered": "2026-09-06 03:48",
   "tldr": [
-    { "value": "—", "label": "EPUB assembly" },
-    { "value": "—", "label": "zip peak RAM" },
-    { "value": "—", "label": "page decode" },
-    { "value": "—", "label": "manifest pass" },
-    { "value": "0", "label": "waves merged" }
+    { "value": "27×", "label": "EPUB assembly (189→7 ms)" },
+    { "value": "−26%", "label": "zip peak RAM (108→80 MB)" },
+    { "value": "3.8×", "label": "network fetch pattern" },
+    { "value": "2–7×", "label": "page-blob decode" },
+    { "value": "10 waves", "label": "9 merged · 1 measured & rejected" },
+    { "value": "52", "label": "tests (was 28)" }
   ],
   "summary": [
-    "Campaign just started. The codebase (2,800 lines, zero dependencies) was surveyed end-to-end and a reproducible benchmark harness now lives in <code>perf/</code>. Baseline numbers are recorded below; two implementation lanes are being dispatched in parallel worktrees: <b>CPU/library</b> (EPUB zip writer, page-blob decode, manifest hashing) and <b>network/interface</b> (HTTP connection reuse, concurrent downloads).",
-    "Measured headline opportunities at baseline: CRC32 done in a pure-JS byte loop where Node ships a native one (~70× on 4&nbsp;MB); every JPEG asset is run through deflate level 9 although random-byte data compresses 0% at any level; all HTTP requests pay a fresh TLS handshake (no keep-alive pooling on the secure path); audiobook parts, magazine pages, and page assets are all downloaded strictly one-at-a-time."
+    "All waves are integrated on branch <code>perf-trial-20260906-030748</code> (hub). <code>main</code> is untouched. 52/52 tests pass (28 at baseline), and every optimization is guarded by a regression or tradeoff-pinning test.",
+    "The library's biggest cost was the dependency-free EPUB zip writer: a pure-JS CRC32 loop (Node ships a native one — 70× faster), deflate level 9 applied to JPEG scans that compress 0% at any level, and a final whole-archive buffer copy. Fixing all three took EPUB assembly of a 13 MB magazine from ~189 ms to ~7 ms and cut peak memory 26%, with output marginally <i>smaller</i> than baseline.",
+    "The interface's biggest cost was serial round trips: every REST call paid a fresh TLS handshake (no keep-alive), audiobook parts downloaded one at a time, and a magazine's pages/assets were fetched one at a time — a 300-page magazine spent minutes waiting on the network. Measured against a local latency-injecting TLS server: connection reuse halved a 30-request loopback run (each saved handshake is worth 50–150 ms against the real OverDrive hosts), and bounded 4-way concurrency turned 120 × 25 ms requests from 3.2 s into 0.83 s (3.84×).",
+    "One candidate was measured and rejected: lazy-loading CLI commands (≤9 ms ceiling, invisible next to process spawn). It stays recorded so nobody re-litigates it."
   ],
   "waves": [
     {
       "id": "W1",
       "name": "Native CRC32 in the EPUB zip writer",
       "area": "library · CPU",
-      "status": "in-progress",
-      "change": "Replace the 256-entry-table pure-JS CRC32 loop in src/epub.mjs with Node's native zlib.crc32 (available since Node 20.15).",
+      "status": "merged",
+      "change": "Replaced the 256-entry-table pure-JS CRC32 loop in src/epub.mjs with Node's native zlib.crc32.",
       "metrics": [
         { "name": "CRC32 of 4 MB buffer", "before": 7.77, "after": 0.11, "unit": " ms", "direction": "lower" }
       ],
       "tradeoffs": [
-        "engines floor must move from >=20 to >=20.15 (applied at integration)",
-        "CRC result verified byte-identical by the bench"
+        "engines floor moved from >=20 to >=20.15 (zlib.crc32 availability) — done in package.json",
+        "CRC outputs verified byte-identical by the bench"
       ],
       "files": ["src/epub.mjs"]
     },
@@ -46,14 +49,15 @@
       "id": "W2",
       "name": "Store already-compressed media instead of deflating",
       "area": "library · CPU + storage",
-      "status": "in-progress",
-      "change": "zip() runs deflate level 9 over every entry. JPEG/PNG/GIF/webp/MP3/PDF payloads compress 0% (measured ratio 1.000 at levels 6 and 9) — store them uncompressed like the mimetype entry already is.",
+      "status": "merged",
+      "change": "zip() ran deflate level 9 over every entry. JPEG/PNG/GIF/webp/avif/MP3/MP4/m4a/PDF payloads compress 0% (measured ratio 1.000 at levels 6 and 9) — they are now STORED, like the mimetype entry always was.",
       "metrics": [
-        { "name": "deflate 1 MB JPEG-like data, level 9", "before": 14.45, "after": null, "unit": " ms", "direction": "lower" }
+        { "name": "deflate 1 MB JPEG-like data, level 9", "before": 14.45, "after": 0, "unit": " ms", "direction": "lower" },
+        { "name": "13 MB synthetic EPUB assembly", "before": 188.7, "after": 7.0, "unit": " ms", "direction": "lower" }
       ],
       "tradeoffs": [
-        "If a file were mislabeled (e.g. a .jpg that is actually uncompressed), the EPUB would carry it raw — size grows by that file's compression potential. In practice scan assets are real JPEGs.",
-        "EPUB readers accept stored entries (spec-compliant); verified with unzip -t at integration."
+        "A mislabeled media file (a .jpg that is really uncompressed data) would now be carried raw — in practice scan assets are real JPEGs, and the whole EPUB came out ~0.2% SMALLER than baseline (no deflate overhead on incompressible bytes)",
+        "EPUB readers accept stored entries (spec-compliant); unzip -t clean, and now asserted in test/epub-integrity.test.mjs"
       ],
       "files": ["src/epub.mjs"]
     },
@@ -61,14 +65,14 @@
       "id": "W3",
       "name": "Deflate level 9 → 6 for compressible entries",
       "area": "library · CPU vs storage tradeoff",
-      "status": "in-progress",
-      "change": "For text/XHTML entries, level 6 is 2× faster than level 9 for a 0.088 → 0.090 ratio (+2% on the text portion, <0.1% of a real EPUB's bytes since image scans dominate).",
+      "status": "merged",
+      "change": "Text/XHTML entries deflate at level 6: 2× faster for ratio 0.088 → 0.090.",
       "metrics": [
-        { "name": "deflate 1 MB XHTML-like text", "before": 12.77, "after": 6.22, "unit": " ms", "direction": "lower" }
+        { "name": "deflate 1 MB XHTML-like text", "before": 12.02, "after": 5.68, "unit": " ms", "direction": "lower" }
       ],
       "tradeoffs": [
-        "EPUB files grow ~2% on their text entries; total archive size impact is well under 1% because image assets dominate.",
-        "Reversible one-liner if the owner prefers level 9."
+        "Text entries grow ~2%; whole-EPUB impact well under 1% because image scans dominate the bytes",
+        "One-line revert if the owner prefers level 9"
       ],
       "files": ["src/epub.mjs"]
     },
@@ -76,13 +80,14 @@
       "id": "W4",
       "name": "Single-allocation zip assembly (peak RAM)",
       "area": "library · RAM",
-      "status": "in-progress",
-      "change": "zip() accumulates every entry in a chunk list, then Buffer.concat copies the whole EPUB a second time. Building directly into one preallocated output buffer removes that copy.",
+      "status": "merged",
+      "change": "zip() built a chunk list then Buffer.concat'd the entire EPUB a second time. It now writes into one preallocated buffer (deflate first to learn sizes, then fill).",
       "metrics": [
-        { "name": "peak RSS assembling 12.7 MB EPUB", "before": 109, "after": null, "unit": " MB", "direction": "lower" }
+        { "name": "peak RSS assembling 12.7 MB EPUB", "before": 108, "after": 80, "unit": " MB", "direction": "lower" }
       ],
       "tradeoffs": [
-        "Compressed entries still exist transiently (deflate cannot target an existing buffer synchronously); a full streaming zip-to-file would cut peak further but changes the public API — deferred unless the owner wants it."
+        "Compressed entries still exist transiently (synchronous deflate cannot target an existing buffer). A streaming zip-to-file would cut peak further but changes the public API — left for the owner to want",
+        "During the rewrite an allocUnsafe EOCD zero-fill bug was introduced and caught by unzip -t; a test now asserts those fields"
       ],
       "files": ["src/epub.mjs"]
     },
@@ -90,13 +95,14 @@
       "id": "W5",
       "name": "Faster __bif_cfc1 page-blob decode",
       "area": "library · CPU",
-      "status": "in-progress",
-      "change": "read.mjs deciphers every read-host page with a regex replace over the blob (per-match overhead at MB scale). Replace with a semantics-identical code-unit swap loop.",
+      "status": "merged",
+      "change": "read.mjs decoded every read-host page with a regex replace (per-match overhead at MB scale). Replaced with a hand-rolled code-unit quad-swap loop that is exactly equivalent — including the subtle rule that groups containing line terminators pass through and realign scanning.",
       "metrics": [
-        { "name": "decode 2.8 MB blob", "before": 59.86, "after": null, "unit": " ms", "direction": "lower" }
+        { "name": "decode 2.8 MB blob (bench, in-process)", "before": 65.0, "after": 34.5, "unit": " ms", "direction": "lower" },
+        { "name": "same, fresh-process A/B", "before": 60, "after": 8.6, "unit": " ms", "direction": "lower" }
       ],
       "tradeoffs": [
-        "Must replicate regex '．' semantics (groups spanning line terminators are left intact) — equivalence asserted by the bench."
+        "Equivalence property-tested against the original regex: deterministic hostile-input sweep + hand-computed edges (4n±k lengths, terminators) in test/read.test.mjs"
       ],
       "files": ["src/read.mjs"]
     },
@@ -104,13 +110,14 @@
       "id": "W6",
       "name": "Parallel integrity-manifest hashing",
       "area": "library · speed",
-      "status": "in-progress",
-      "change": "writeManifest() hashes every archived file one stream at a time. Hash up to ~8 files concurrently (order preserved in the output manifest).",
+      "status": "merged",
+      "change": "writeManifest() hashed files one stream at a time; now ~8 files in flight with 1 MiB reads, order preserved.",
       "metrics": [
-        { "name": "hash 50 MB archive (12 files)", "before": 22.96, "after": null, "unit": " ms", "direction": "lower" }
+        { "name": "hash 50 MB archive, warm cache", "before": 23.98, "after": 18.01, "unit": " ms", "direction": "lower" }
       ],
       "tradeoffs": [
-        "More concurrent file handles during the final pass (bounded, closed when done). Manifest content must stay byte-identical — asserted by the bench."
+        "Warm-cache gain is modest because SHA-256 runs at hardware speed on M4 and the cache absorbs I/O; the win grows on cold caches/slower disks and larger archives",
+        "Output is byte-identical to the sequential implementation — pinned in test/manifest-ref.test.mjs against a vendored copy of the old algorithm"
       ],
       "files": ["src/util.mjs"]
     },
@@ -118,14 +125,16 @@
       "id": "W7",
       "name": "Keep-alive HTTP connection pooling",
       "area": "interface/network · latency",
-      "status": "in-progress",
-      "change": "jsonRequest/fetchBuffer use the default global agent (keepAlive off): every Thunder/stargazer/cover call pays a full TLS handshake. Pool connections per host with a bounded keep-alive agent while keeping the per-request socket timeouts that guard against the historic wedge failure.",
+      "status": "merged",
+      "change": "REST calls used Node's default global agent (keepAlive off): every Thunder/stargazer/cover/page request paid a fresh TLS handshake. One pooled agent per TLS mode now: keepAlive, maxSockets 8, maxFreeSockets 4, 30 s keep-alive, noDelay, agent-level timeout backstop — with the per-request timeout/destroy handlers untouched so the historic wedge failure stays closed.",
       "metrics": [
-        { "name": "per-request saving (typical TLS handshake RTT)", "before": null, "after": null, "unit": "", "direction": "lower" }
+        { "name": "30 sequential GETs, loopback TLS", "before": 82, "after": 41, "unit": " ms", "direction": "lower" },
+        { "name": "server-side connections for those 30 requests", "before": 30, "after": "reused (≤1)", "unit": "", "direction": "lower" }
       ],
       "tradeoffs": [
-        "Sockets linger open briefly after the last request (bounded by keep-alive TTL); CLI exit closes them.",
-        "Must keep per-request timeouts — a pooled agent without them is exactly the failure mode the http.mjs header comment warns about."
+        "Loopback understates the win: each avoided handshake is worth ~50–150 ms against the real OverDrive hosts",
+        "Up to 4 idle sockets per host linger ≤30 s; CLI exit closes them",
+        "Pinned by tests: reuse count, hung-socket timeout, 12-over-8 drain (test/http.test.mjs)"
       ],
       "files": ["src/http.mjs"]
     },
@@ -133,66 +142,90 @@
       "id": "W8",
       "name": "Concurrent audiobook part downloads",
       "area": "library · wall-clock",
-      "status": "in-progress",
-      "change": "archive.mjs downloads spine parts strictly sequentially. Fetch 3 parts at a time (bounded), preserving per-part resume/skip logic and logs.",
+      "status": "merged",
+      "change": "Spine parts download 3 at a time (mapLimit) instead of strictly sequentially. Skip/resume logic, per-part logs, fail-fast, and spine order preserved.",
       "metrics": [
-        { "name": "expected wall-clock (network-bound)", "before": null, "after": null, "unit": "", "direction": "lower" }
+        { "name": "network pattern, 120 req × 25 ms (limit 4 measured)", "before": 3202, "after": 834, "unit": " ms", "direction": "lower" }
       ],
       "tradeoffs": [
-        "3 simultaneous connections to the OverDrive CDN per title — politeness bound kept low on purpose.",
-        "Failure of one part still aborts the loan; resume logic unchanged."
+        "3 simultaneous CDN connections per title — deliberately low (the browser uses 6+)",
+        "Part-level failure still aborts the loan; resume unchanged"
       ],
-      "files": ["src/archive.mjs"]
+      "files": ["src/archive.mjs", "src/pool.mjs"]
     },
     {
       "id": "W9",
       "name": "Concurrent page + asset fetching (ebooks/magazines)",
       "area": "library · wall-clock",
-      "status": "in-progress",
-      "change": "archive-read.mjs fetches and decodes pages one at a time (a 300-page magazine = 300 serial round trips), then assets one at a time. Bound concurrency at 4, preserving spine order for EPUB assembly and fail-fast on first error.",
+      "status": "merged",
+      "change": "Pages fetch+decode 4 at a time, then assets 4 at a time (both were serial — a 300-page magazine was 300 round trips). pageEntries stay in spine order for EPUB assembly; non-200 assets still log-and-skip; first page error rejects the loan.",
       "metrics": [
-        { "name": "expected wall-clock (network-bound)", "before": null, "after": null, "unit": "", "direction": "lower" }
+        { "name": "network pattern, 120 req × 25 ms", "before": 3202, "after": 834, "unit": " ms", "direction": "lower" },
+        { "name": "300-page magazine wait @80 ms RTT (model)", "before": 24000, "after": 6500, "unit": " ms", "direction": "lower" }
       ],
       "tradeoffs": [
-        "In-flight page/asset bodies raise steady-state RAM by the concurrency factor (a few MB); bounded at 4.",
-        "Bursts of 4 parallel requests to the read host with the session cookie — same host the browser uses."
+        "In-flight page/asset bodies raise steady-state RAM by the concurrency factor (bounded, a few MB)",
+        "Page logs now report decoded (completed) pages so numbers stay truthful under interleaving",
+        "Also removed: dead width variable in archive-read step 4"
       ],
-      "files": ["src/archive-read.mjs"]
+      "files": ["src/archive-read.mjs", "src/pool.mjs"]
     },
     {
       "id": "W10",
       "name": "CLI lazy command loading",
       "area": "interface · startup",
       "status": "rejected",
-      "change": "Considered splitting bin/libby.mjs imports per command. Measured first: full import graph costs ~9 ms over the bare Node floor (36.4 vs 27.3 ms for `libby help`).",
+      "change": "Considered splitting bin/libby.mjs imports per command. Measured first: the full import graph costs ~9 ms over the bare Node floor (36.4 vs 27.3 ms for libby help).",
       "metrics": [
         { "name": "libby help startup", "before": 36.4, "after": 36.4, "unit": " ms", "direction": "lower" }
       ],
       "tradeoffs": [
-        "Rejected: ≤9 ms upside is invisible next to process spawn cost, and dynamic imports move load errors from startup to command time. Recorded so nobody re-litigates it."
+        "Rejected: ≤9 ms upside is invisible next to process spawn cost; dynamic imports would move load errors from startup to command time. Recorded so nobody re-litigates it."
       ],
       "files": ["bin/libby.mjs"]
+    },
+    {
+      "id": "W11",
+      "name": "Regression + tradeoff-pinning test wave",
+      "area": "all · correctness",
+      "status": "merged",
+      "change": "Test suite grew 28 → 52. New: pooled-HTTP properties (socket reuse counted server-side, hung-socket timeout, 12-over-8 drain), downloadPart over pooled connections (redirect, exact bytes + sha256, truncated-body rejection with .part cleanup), EPUB spec validity via unzip -t, store/deflate method pins, stored-entry CRC pin, size-tradeoff pins (text still compresses <40%, stored media adds ≤1 KB overhead), manifest byte-identity vs the vendored sequential reference, and a proper fail-fast pin for mapLimit (the original lane test passed only by timing accident — the bug it masked was real and is now fixed).",
+      "metrics": [
+        { "name": "tests", "before": 28, "after": 52, "unit": "", "direction": "higher" }
+      ],
+      "tradeoffs": [
+        "The EPUB size pins encode this campaign's CPU-vs-storage choices: if a future change re-inflates stored media or stops compressing text, the suite fails with the tradeoff in the message"
+      ],
+      "files": ["test/http.test.mjs", "test/epub-integrity.test.mjs", "test/manifest-ref.test.mjs", "test/pool.test.mjs", "test/helpers/sim-server.mjs"]
     }
   ],
   "baseline": {
     "file": "perf/results-baseline.json",
     "sections": {
       "crc32_4mb (JS vs native zlib)": { "jsMs": 7.77, "nativeMs": 0.11 },
-      "zip_assembly (13 MB synthetic EPUB)": { "wallMs": 192.76, "peakRssMB": 109, "outputMB": 12.7 },
-      "deflate_1mb_text": { "level9Ms": 12.77, "level6Ms": 6.22, "level9Ratio": 0.088, "level6Ratio": 0.09 },
+      "zip_assembly (13 MB synthetic EPUB)": { "wallMs": 188.74, "peakRssMB": 108, "outputMB": 12.7 },
+      "deflate_1mb_text": { "level9Ms": 12.02, "level6Ms": 5.68, "level9Ratio": 0.088, "level6Ratio": 0.09 },
       "deflate_1mb_jpegish": { "level9Ms": 14.45, "level6Ms": 14.44, "ratioAtAnyLevel": 1.0 },
-      "cfc1_decode_2_8mb_blob": { "ms": 59.86 },
-      "manifest_hash_50mb": { "ms": 22.96 },
-      "cli_startup_help": { "fullMs": 36.4, "nodeFloorMs": 27.3 }
+      "cfc1_decode_2_8mb_blob": { "ms": 65.0 },
+      "manifest_hash_50mb": { "ms": 23.98 },
+      "cli_startup_help": { "fullMs": 36.4, "nodeFloorMs": 27.3 },
+      "net_reuse_30_gets_loopback": { "wallMs": 82, "serverConnections": 30 },
+      "net_concurrency_120req_25ms": { "sequentialMs": 3202 }
     }
   },
   "adoption": [
-    "Nothing on <code>main</code> changes during the trial. Work happens on branches <code>perf-trial-20260906-030748</code> (integration) with per-lane branches, all created from be863fd.",
-    "When the trial is accepted, the hub branch fast-forwards or is cherry-picked into <code>main</code>; each wave is an independent commit so any piece can be adopted or dropped alone."
+    "Everything lives on branch <code>perf-trial-20260906-030748</code> (hub), merged from lane branches <code>-cpu</code> and <code>-net</code>; each wave is an independent commit so any piece can be adopted or dropped alone. <code>main</code> is untouched.",
+    "To adopt everything: <code>git merge perf-trial-20260906-030748</code> from main (fast-forward). package.json engines is now <code>&gt;=20.15</code> (zlib.crc32).",
+    "Behavioral deltas to be aware of: EPUB bytes differ from baseline by design (stored media, level-6 text) but remain spec-valid and ~0.2% smaller; page/asset log lines now report completions rather than starts; anything else is byte-identical (manifests, decoded content).",
+    "Reproducible: <code>node --test</code> (52), <code>node --expose-gc perf/bench.mjs</code>, <code>node perf/net-sim.mjs src current</code>. Lane notes: perf-notes-cpu.md / perf-notes-net.md in the respective worktrees."
   ],
   "log": [
     { "t": "03:07", "entry": "Trial opened: worktrees + branches perf-trial-20260906-030748{,-cpu,-net} created from be863fd." },
-    { "t": "03:12", "entry": "Benchmark harness written (perf/bench.mjs, perf/zip-one.mjs, perf/gen.mjs); baseline snapshot captured to perf/baseline/; full test suite green at base." },
-    { "t": "03:14", "entry": "Baseline measured (see Baseline section). W10 (CLI lazy loading) measured and rejected — ~9 ms ceiling. Two lanes dispatched: CPU (W1–W6) and network (W7–W9)." }
+    { "t": "03:12", "entry": "Bench harness written (perf/bench.mjs, zip-one.mjs, gen.mjs); baseline snapshot captured; suite green at base (28 tests)." },
+    { "t": "03:14", "entry": "Baseline measured. W10 (CLI lazy loading) measured and rejected — ~9 ms ceiling. Lanes dispatched: CPU (W1–W6) and network (W7–W9)." },
+    { "t": "03:25", "entry": "Subagent limit reduced to 1: net lane taken over by coordinator after its first 2 commits; mapLimit fail-fast bug found in review and fixed with a proper pinning test." },
+    { "t": "03:31", "entry": "CPU lane complete (receipt: zip 189→5 ms fresh-process, cfc1 60→8.6 ms, manifest identical). Both lanes merged into hub; engines bumped to >=20.15; 39/39 tests green; merged bench: zip 27×, RSS −26%, EPUB 0.2% smaller." },
+    { "t": "03:44", "entry": "Regression + tradeoff test wave (W11): suite 28 → 52, all green. Local-TLS fixture server added (test/helpers/sim-server.mjs)." },
+    { "t": "03:48", "entry": "Network patterns measured against local latency server: reuse 30 conns → ≤1 (82→41 ms loopback), concurrency 3.84× (3202→834 ms). Report finalized." }
   ]
 }

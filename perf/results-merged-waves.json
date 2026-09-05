@@ -1,0 +1,51 @@
+{
+  "label": "merged-waves",
+  "date": "2026-09-05T15:35:45.718Z",
+  "node": "v26.7.0",
+  "cpu": "Apple M4",
+  "sections": {
+    "crc32_4mb": {
+      "jsMs": 7.31,
+      "nativeMs": 0.11,
+      "outputsAgree": true
+    },
+    "zip_assembly": {
+      "inputMB": 13,
+      "baselineMs": 188.74,
+      "currentMs": 7.01,
+      "outputBytesAgree": false,
+      "baselineBytes": 12685676,
+      "currentBytes": 12682772
+    },
+    "deflate_levels": {
+      "text1mb": {
+        "level9Ms": 12.02,
+        "level6Ms": 5.68,
+        "level9Ratio": 0.088,
+        "level6Ratio": 0.09
+      },
+      "jpeg1mb": {
+        "level9Ms": 14.24,
+        "level6Ms": 14.29,
+        "level9Ratio": 1,
+        "level6Ratio": 1
+      }
+    },
+    "cfc1_decode": {
+      "blobChars": 2796204,
+      "baselineMs": 64.98,
+      "currentMs": 34.45,
+      "outputsAgree": true
+    },
+    "manifest_hash_50mb": {
+      "baselineMs": 23.98,
+      "currentMs": 18.01,
+      "manifestsAgree": true
+    },
+    "cli_startup_help": {
+      "baselineMs": 33.2,
+      "currentMs": 32.8,
+      "nodeFloorMs": 24.4
+    }
+  }
+}
