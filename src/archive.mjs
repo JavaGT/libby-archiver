@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { openLoan, fetchOpenbook, extractSpine } from './openbook.mjs';
 import { downloadPart } from './download.mjs';
+import { mapLimit } from './pool.mjs';
 import { fetchThunderMedia, maxResCoverUrl, downloadCover } from './metadata.mjs';
 import {
   pad,
@@ -77,16 +78,15 @@ export async function archiveAudiobook(ctx, loan, outDir) {
     }
   }
 
-  // 5. download spine parts
-  const partFiles = [];
-  for (const part of spine) {
+  // 5. download spine parts — 3 at a time (bounded, CDN-polite); parts are independent
+  // files, and mapLimit keeps partFiles in spine order for the manifest
+  const partFiles = await mapLimit(spine, 3, async (part) => {
     const name = `Part ${pad(part.index)}.mp3`;
     const dest = path.join(bookDir, name);
     const have = fs.existsSync(dest) ? fs.statSync(dest).size : 0;
     if (have > 0 && (!part.size || have === part.size)) {
       log(`   ${name} already present, skipping`);
-      partFiles.push(dest);
-      continue;
+      return dest;
     }
     if (have > 0) log(`   ${name} is ${have} bytes (expected ${part.size}), re-downloading`);
     log(`   downloading ${name} ...`);
@@ -95,8 +95,8 @@ export async function archiveAudiobook(ctx, loan, outDir) {
       insecureTLS: cfg.insecureTLS,
     });
     log(`   ${name}: ${(bytes / 1e6).toFixed(1)} MB`);
-    partFiles.push(dest);
-  }
+    return dest;
+  });
 
   // 6. normalized metadata summary (openbook is authoritative for audio structure)
   const creators = openbook.creator ?? [];

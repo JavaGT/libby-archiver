@@ -53,6 +53,19 @@ test('fails fast: rejects with the first error and starts no new items', async (
   releaseBlocked(); // let the blocked worker wind down
 });
 
+test('after a rejection, a freed worker starts no further items', async () => {
+  let started = 0;
+  const run = mapLimit([0, 1, 2, 3], 2, async (n) => {
+    started++;
+    await tick(n === 0 ? 20 : 1); // item 0 keeps one worker busy past the rejection
+    if (n === 1) throw new Error('boom');
+    return n;
+  });
+  await assert.rejects(run, /boom/);
+  await tick(50); // without the stop flag, the free worker would pull items 2 and 3 here
+  assert.equal(started, 2);
+});
+
 test('empty input resolves to an empty array without calling fn', async () => {
   let calls = 0;
   const out = await mapLimit([], 4, async (x) => (calls++, x));

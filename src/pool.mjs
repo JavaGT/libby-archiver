@@ -22,7 +22,12 @@ export async function mapLimit(items, limit, fn) {
   const worker = async () => {
     while (!failed && next < items.length) {
       const i = next++;
-      results[i] = await fn(items[i], i);
+      try {
+        results[i] = await fn(items[i], i);
+      } catch (e) {
+        failed = true; // stop the pool: free workers must not start further items
+        throw e;
+      }
     }
   };
   const workers = [];
