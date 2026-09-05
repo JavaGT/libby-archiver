@@ -42,7 +42,7 @@ export {
 
 // Read-host (ebook / magazine) content decode + EPUB packaging
 export { cfc1, decodePage, fetchPage, fetchReadResource, assetRefs } from './read.mjs';
-export { buildEpub, zip } from './epub.mjs';
+export { buildEpub, zip, entriesFor, writeZip, writeEpub } from './epub.mjs';
 
 // Download + supplementary metadata
 export { downloadPart } from './download.mjs';
