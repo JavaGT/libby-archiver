@@ -7,6 +7,9 @@ import { zip, buildEpub } from '../src/epub.mjs';
 function parseZip(buf) {
   const eocd = buf.length - 22;
   assert.equal(buf.readUInt32LE(eocd), 0x06054b50, 'missing end-of-central-directory');
+  assert.equal(buf.readUInt16LE(eocd + 4), 0, 'EOCD disk number must be 0');
+  assert.equal(buf.readUInt16LE(eocd + 6), 0, 'EOCD central-directory disk must be 0');
+  assert.equal(buf.readUInt16LE(eocd + 20), 0, 'EOCD comment length must be 0');
   const count = buf.readUInt16LE(eocd + 10);
   let p = buf.readUInt32LE(eocd + 16);
   const entries = [];
@@ -21,12 +24,13 @@ function parseZip(buf) {
     const name = buf.toString('utf8', p + 46, p + 46 + nameLen);
 
     assert.equal(buf.readUInt32LE(localOff), 0x04034b50, `bad local header for ${name}`);
+    const localMethod = buf.readUInt16LE(localOff + 8);
     const lNameLen = buf.readUInt16LE(localOff + 26);
     const lExtraLen = buf.readUInt16LE(localOff + 28);
     const start = localOff + 30 + lNameLen + lExtraLen;
     const comp = buf.subarray(start, start + compSize);
     const data = method === 0 ? comp : zlib.inflateRawSync(comp);
-    entries.push({ name, method, data });
+    entries.push({ name, method, localMethod, compSize, data });
     p += 46 + nameLen + extraLen + commentLen;
   }
   return entries;
@@ -98,4 +102,29 @@ test('buildEpub marks fixed-layout books for pre-paginated rendition', () => {
 
 test('buildEpub refuses entry names that could escape OEBPS/', () => {
   assert.throws(() => sampleEpub({ evilPath: '../../evil.xhtml' }), /unsafe EPUB entry name/);
+});
+
+test('zip stores already-compressed media payloads and still deflates text', () => {
+  // Incompressible pseudo-random payload: deflate would be pure CPU waste.
+  const jpg = Buffer.alloc(4096);
+  for (let i = 0; i < jpg.length; i++) jpg[i] = (i * 2654435761) >>> 24; // Knuth hash bits
+  const buf = zip([
+    { name: 'mimetype', data: 'application/epub+zip', store: true },
+    { name: 'OEBPS/cover.JPG', data: jpg }, // extension match is case-insensitive
+    { name: 'OEBPS/c1.xhtml', data: `<p>${'spam & eggs '.repeat(64)}</p>\n` },
+  ]);
+  const entries = parseZip(buf);
+
+  const cover = entries[1];
+  assert.equal(cover.name, 'OEBPS/cover.JPG');
+  assert.equal(cover.method, 0, 'media payload must be stored');
+  assert.equal(cover.localMethod, 0, 'local header method field must also say stored');
+  assert.equal(cover.compSize, jpg.length, 'stored payload is byte-identical');
+  assert.ok(cover.data.equals(jpg));
+
+  const page = entries[2];
+  assert.equal(page.name, 'OEBPS/c1.xhtml');
+  assert.equal(page.method, 8, 'text entries still deflate');
+  assert.ok(page.compSize < page.data.length, 'text actually compresses');
+  assert.equal(page.data.toString(), `<p>${'spam & eggs '.repeat(64)}</p>\n`);
 });

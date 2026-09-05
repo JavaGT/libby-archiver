@@ -106,7 +106,9 @@ export function writeJson(file, data, { secret = false } = {}) {
 
 /**
  * Hash every file in dir (recursively) into manifest.sha256. Temp files from
- * interrupted downloads (*.part) are excluded — they are not content.
+ * interrupted downloads (*.part) are excluded — they are not content. Files are
+ * hashed with bounded concurrency (up to 8 streams, 1 MiB reads) but the manifest
+ * lines keep the same sorted relative-path order, so output is byte-identical.
  */
 export async function writeManifest(dir) {
   const rels = [];
@@ -120,12 +122,24 @@ export async function writeManifest(dir) {
     }
   };
   walk(dir);
-  const lines = [];
-  for (const r of rels) {
+
+  const lines = new Array(rels.length);
+  let next = 0;
+  const hashOne = async (r) => {
     const hash = crypto.createHash('sha256');
-    for await (const chunk of fs.createReadStream(path.join(dir, r))) hash.update(chunk);
-    lines.push(`${hash.digest('hex')}  ${r}`);
-  }
+    for await (const chunk of fs.createReadStream(path.join(dir, r), { highWaterMark: 1 << 20 })) {
+      hash.update(chunk);
+    }
+    return `${hash.digest('hex')}  ${r}`;
+  };
+  // Fixed worker pool over the shared index: `next` is claimed synchronously before
+  // each await, so workers never collide; results land at their original index.
+  await Promise.all(
+    Array.from({ length: Math.min(8, rels.length) }, async () => {
+      while (next < rels.length) lines[next] = await hashOne(rels[next++]);
+    }),
+  );
+
   fs.writeFileSync(path.join(dir, MANIFEST_NAME), lines.join('\n') + '\n', 'utf8');
 }
 
