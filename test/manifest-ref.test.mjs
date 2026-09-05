@@ -53,3 +53,26 @@ test('concurrent writeManifest is byte-identical to the sequential reference', a
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('known digests skip the re-read yet yield a manifest identical to a full hash', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libby-man-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'Part 01.mp3'), Buffer.alloc(200 * 1024, 1));
+    fs.writeFileSync(path.join(dir, 'Part 02.mp3'), Buffer.alloc(200 * 1024, 2));
+    fs.writeFileSync(path.join(dir, 'metadata.json'), '{"small":true}');
+
+    // Digests a streaming writer would have produced while writing the files.
+    const sha = (rel) => crypto.createHash('sha256').update(fs.readFileSync(path.join(dir, rel))).digest('hex');
+    const known = { 'Part 01.mp3': sha('Part 01.mp3'), 'Part 02.mp3': sha('Part 02.mp3') };
+
+    await writeManifest(dir, { known });
+    const got = fs.readFileSync(path.join(dir, 'manifest.sha256'), 'utf8');
+    assert.equal(got, await sequentialManifest(dir));
+
+    // The known-path lines are exactly the provided digests (they were trusted, not recomputed).
+    assert.ok(got.includes(`${known['Part 01.mp3']}  Part 01.mp3`));
+    assert.ok(got.includes(`${known['Part 02.mp3']}  Part 02.mp3`));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

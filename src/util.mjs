@@ -109,8 +109,14 @@ export function writeJson(file, data, { secret = false } = {}) {
  * interrupted downloads (*.part) are excluded — they are not content. Files are
  * hashed with bounded concurrency (up to 8 streams, 1 MiB reads) but the manifest
  * lines keep the same sorted relative-path order, so output is byte-identical.
+ *
+ * `known` maps a relative path to a sha256 hex digest that a writer already
+ * computed while producing the file (e.g. downloadPart hashes while streaming).
+ * Matching files skip the re-read entirely, so the integrity pass only re-reads
+ * content that no one hashed yet. Callers must pass exact digests — they are
+ * trusted as-is; a wrong digest would produce a wrong manifest.
  */
-export async function writeManifest(dir) {
+export async function writeManifest(dir, { known = {} } = {}) {
   const rels = [];
   const walk = (d, rel = '') => {
     for (const name of fs.readdirSync(d).sort()) {
@@ -126,6 +132,8 @@ export async function writeManifest(dir) {
   const lines = new Array(rels.length);
   let next = 0;
   const hashOne = async (r) => {
+    const pre = known[r];
+    if (pre) return `${pre}  ${r}`;
     const hash = crypto.createHash('sha256');
     for await (const chunk of fs.createReadStream(path.join(dir, r), { highWaterMark: 1 << 20 })) {
       hash.update(chunk);

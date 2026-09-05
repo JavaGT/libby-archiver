@@ -79,7 +79,10 @@ export async function archiveAudiobook(ctx, loan, outDir) {
   }
 
   // 5. download spine parts — 3 at a time (bounded, CDN-polite); parts are independent
-  // files, and mapLimit keeps partFiles in spine order for the manifest
+  // files, and mapLimit keeps partFiles in spine order for the manifest. downloadPart
+  // hashes while streaming, so we keep those digests and the manifest pass (step 7)
+  // can skip re-reading the parts — on a large audiobook that's the whole book.
+  const partHashes = {};
   const partFiles = await mapLimit(spine, 3, async (part) => {
     const name = `Part ${pad(part.index)}.mp3`;
     const dest = path.join(bookDir, name);
@@ -90,10 +93,11 @@ export async function archiveAudiobook(ctx, loan, outDir) {
     }
     if (have > 0) log(`   ${name} is ${have} bytes (expected ${part.size}), re-downloading`);
     log(`   downloading ${name} ...`);
-    const { bytes } = await downloadPart(part, dest, {
+    const { bytes, sha256 } = await downloadPart(part, dest, {
       cookie,
       insecureTLS: cfg.insecureTLS,
     });
+    partHashes[name] = sha256;
     log(`   ${name}: ${(bytes / 1e6).toFixed(1)} MB`);
     return dest;
   });
@@ -125,8 +129,9 @@ export async function archiveAudiobook(ctx, loan, outDir) {
     archivedAt: new Date().toISOString(),
   });
 
-  // 7. integrity manifest + README
-  await writeManifest(bookDir);
+  // 7. integrity manifest + README — parts arrive pre-hashed (step 5), so only the
+  // small sidecars are re-read here
+  await writeManifest(bookDir, { known: partHashes });
   fs.writeFileSync(
     path.join(bookDir, 'README.txt'),
     readmeText(loan, spine.length),
