@@ -1,0 +1,51 @@
+{
+  "label": "baseline",
+  "date": "2026-09-05T15:11:14.699Z",
+  "node": "v26.7.0",
+  "cpu": "Apple M4",
+  "sections": {
+    "crc32_4mb": {
+      "jsMs": 7.77,
+      "nativeMs": 0.11,
+      "outputsAgree": true
+    },
+    "zip_assembly": {
+      "inputMB": 13,
+      "baselineMs": 192.76,
+      "currentMs": 192.47,
+      "outputBytesAgree": true,
+      "baselineBytes": 12685676,
+      "currentBytes": 12685676
+    },
+    "deflate_levels": {
+      "text1mb": {
+        "level9Ms": 12.77,
+        "level6Ms": 6.22,
+        "level9Ratio": 0.088,
+        "level6Ratio": 0.09
+      },
+      "jpeg1mb": {
+        "level9Ms": 14.45,
+        "level6Ms": 14.44,
+        "level9Ratio": 1,
+        "level6Ratio": 1
+      }
+    },
+    "cfc1_decode": {
+      "blobChars": 2796204,
+      "baselineMs": 63.53,
+      "currentMs": 59.86,
+      "outputsAgree": true
+    },
+    "manifest_hash_50mb": {
+      "baselineMs": 23,
+      "currentMs": 22.96,
+      "manifestsAgree": true
+    },
+    "cli_startup_help": {
+      "baselineMs": 36.4,
+      "currentMs": 37,
+      "nodeFloorMs": 27.3
+    }
+  }
+}
