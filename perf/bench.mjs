@@ -27,6 +27,8 @@ const oldRead = await import(path.join(BASE, 'src/read.mjs'));
 const newRead = await import(path.join(CUR, 'src/read.mjs'));
 const oldUtil = await import(path.join(BASE, 'src/util.mjs'));
 const newUtil = await import(path.join(CUR, 'src/util.mjs'));
+const oldOpenbook = await import(path.join(BASE, 'src/openbook.mjs'));
+const newOpenbook = await import(path.join(CUR, 'src/openbook.mjs'));
 
 const gc = globalThis.gc ?? (() => {});
 const med = (xs) => {
@@ -115,6 +117,22 @@ const results = { label, date: new Date().toISOString(), node: process.version, 
   const oldMs = await time(() => oldRead.cfc1(blob), quick ? 2 : 5);
   const newMs = await time(() => newRead.cfc1(blob), quick ? 2 : 5);
   results.sections.cfc1_decode = { blobChars: blob.length, baselineMs: oldMs, currentMs: newMs, outputsAgree: a === b };
+}
+
+// ---- 4b. openbook decode (player page -> openbook) -------------------------------
+{
+  const { openbookPage } = await import('./gen.mjs');
+  const page = openbookPage(1_500_000);
+  const oldDoc = oldOpenbook.decodeOpenbook(page, 'ab9cd');
+  const newDoc = newOpenbook.decodeOpenbook(page, 'ab9cd');
+  const oldMs = await time(() => oldOpenbook.decodeOpenbook(page, 'ab9cd'), quick ? 1 : 5);
+  const newMs = await time(() => newOpenbook.decodeOpenbook(page, 'ab9cd'), quick ? 1 : 5);
+  results.sections.openbook_decode = {
+    pageChars: page.length,
+    baselineMs: oldMs,
+    currentMs: newMs,
+    outputsAgree: JSON.stringify(oldDoc) === JSON.stringify(newDoc),
+  };
 }
 
 // ---- 5. manifest hashing (whole-archive integrity pass) -------------------------

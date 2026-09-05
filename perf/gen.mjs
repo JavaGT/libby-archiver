@@ -46,3 +46,61 @@ export function syntheticEpub({ pages = 120, pageSize = 6 * 1024, assets = 100, 
   files.push({ name: 'OEBPS/cover.jpg', data: jpegish(coverSize) });
   return files;
 }
+
+// ---- bifocal eData fixture (mirrors the forward-scramble in test/openbook.test.mjs) ----
+
+const BUID = 'ab9cd'; // contains a nonzero digit so the scramble engages
+
+function scramble(key, data) {
+  let out = '';
+  for (let a = 0; a < data.length; a++) {
+    const target = data.charCodeAt(a);
+    const d = parseFloat(key[a % key.length]);
+    if (!d) {
+      out += data[a];
+      continue;
+    }
+    let found = data[a];
+    for (let c = 32; c <= 126; c++) {
+      let y = c + ((a + d) % 94);
+      if (y > 126) y = (y % 126) + 32;
+      if (y === target) {
+        found = String.fromCharCode(c);
+        break;
+      }
+    }
+    out += found;
+  }
+  return out;
+}
+
+/** A listen-host player page embedding a ~targetJsonChars openbook as window.eData. */
+export function openbookPage(targetJsonChars = 1_500_000) {
+  const spine = [];
+  const cmpts = [];
+  for (let i = 0; i < 400; i++) {
+    spine.push({
+      path: `res/part${i}.mp3`,
+      '-odread-spine-position': i,
+      '-odread-original-path': `Part ${i + 1}.mp3`,
+      '-odread-file-bytes': 5_000_000 + i,
+      'audio-duration': 600 + i,
+      'media-type': 'audio/mpeg',
+    });
+    cmpts.push(`cmpt=${i}`);
+  }
+  const doc = {
+    b: {
+      title: { main: 'Bench Openbook' },
+      description: { full: 'x'.repeat(Math.max(0, targetJsonChars - 130_000)) },
+      spine,
+      '-odread-cmpt-params': cmpts,
+      nav: { toc: spine.slice(0, 50).map((p, i) => ({ title: `Chapter ${i}`, path: p.path })) },
+      creator: [{ name: 'A. Author', role: 'author' }],
+    },
+  };
+  const json = Buffer.from(JSON.stringify(doc)).toString('base64');
+  const scrambled = scramble(BUID.split('').reverse().join(''), json);
+  const literal = JSON.stringify(scrambled.split('"'));
+  return `<!doctype html><script>window.eData = ${literal};SPARK.bifocalPath='bifocal.js';</script>`;
+}

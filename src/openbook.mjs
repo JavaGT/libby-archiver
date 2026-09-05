@@ -61,11 +61,16 @@ export async function openLoan(client, identity, loan, cfg, kind = openKindFor(l
 // ---- The bifocal eData decoder (pure Node) -------------------------------------
 
 function descramble(key, data) {
-  const out = new Array(data.length);
+  // Per-position shift, precomputed once — the per-character parseFloat dominated
+  // this loop. Value semantics are unchanged: NaN (non-digit) and 0 ('0') both
+  // leave the character untouched.
   const klen = key.length;
+  const shifts = new Array(klen);
+  for (let i = 0; i < klen; i++) shifts[i] = parseFloat(key[i]) || 0;
+  const out = new Array(data.length);
   for (let a = 0; a < data.length; a++) {
     let ch = data.charCodeAt(a);
-    const d = parseFloat(key[a % klen]); // NaN for non-digits, 0 falsy for '0'
+    const d = shifts[a % klen];
     if (d) {
       ch += (a + d) % 94;
       if (ch > 126) ch = (ch % 126) + 32;
@@ -74,6 +79,13 @@ function descramble(key, data) {
   }
   return out.join('');
 }
+
+// Inside a string literal, copying runs is O(runs) instead of O(chars): stop at a
+// backslash (escape) or the active quote (end of string). Global + lastIndex gives
+// "next occurrence at or after i" (sticky would only try exactly at i).
+const RUN_END = { '"': /["\\]/g, "'": /['\\]/g };
+const SIMPLE_ESCAPES = { n: '\n', t: '\t', r: '\r', b: '\b', f: '\f', v: '\v', '0': '\0' };
+const SEPARATOR = /[\s,]/;
 
 /**
  * Parse the eData array literal WITHOUT evaluating it — this text comes off the wire,
@@ -96,40 +108,55 @@ function parseArrayLiteral(literal) {
   let inString = false;
   let quote = '';
   let seenOpen = false;
-  for (let i = 0; i < literal.length; i++) {
-    const c = literal[i];
-    if (inString) {
-      if (c === '\\') {
-        const e = literal[++i];
-        const simple = { n: '\n', t: '\t', r: '\r', b: '\b', f: '\f', v: '\v', '0': '\0' };
-        if (e === 'x') {
-          cur += String.fromCharCode(parseInt(literal.slice(i + 1, i + 3), 16));
-          i += 2;
-        } else if (e === 'u') {
-          cur += String.fromCharCode(parseInt(literal.slice(i + 1, i + 5), 16));
-          i += 4;
-        } else if (e in simple) cur += simple[e];
-        else if (e === undefined) throw new Error('eData literal ends mid-escape');
-        else cur += e; // \' \" \\ and similar
-      } else if (c === quote) {
-        inString = false;
-        out.push(cur);
-        cur = '';
-      } else cur += c;
+  let i = 0;
+  const len = literal.length;
+  while (i < len) {
+    if (!inString) {
+      const c = literal[i];
+      if (c === '"' || c === "'") {
+        inString = true;
+        quote = c;
+        i++;
+      } else if (SEPARATOR.test(c)) {
+        i++; // separators outside strings are structural, nothing to record
+      } else if (c === '[' && !seenOpen && out.length === 0) {
+        seenOpen = true;
+        i++;
+      } else if (c === ']') {
+        i++; // closing bracket
+      } else {
+        throw new Error(`eData literal contains a non-string token near ${JSON.stringify(c)}`);
+      }
       continue;
     }
-    if (c === '"' || c === "'") {
-      inString = true;
-      quote = c;
-    } else if (/\s/.test(c) || c === ',' ) {
-      // separators outside strings are structural, nothing to record
-    } else if (c === '[' && !seenOpen && out.length === 0) {
-      seenOpen = true;
-    } else if (c === ']') {
-      // closing bracket
-    } else {
-      throw new Error(`eData literal contains a non-string token near ${JSON.stringify(c)}`);
+    const run = RUN_END[quote];
+    run.lastIndex = i;
+    const m = run.exec(literal);
+    const end = m ? m.index : len;
+    if (end > i) {
+      cur += literal.slice(i, end);
+      i = end;
+      continue;
     }
+    if (literal[i] === quote) {
+      inString = false;
+      out.push(cur);
+      cur = '';
+      i++;
+      continue;
+    }
+    // backslash escape (the run regex can only have stopped on quote or backslash)
+    const e = literal[++i];
+    if (e === 'x') {
+      cur += String.fromCharCode(parseInt(literal.slice(i + 1, i + 3), 16));
+      i += 2;
+    } else if (e === 'u') {
+      cur += String.fromCharCode(parseInt(literal.slice(i + 1, i + 5), 16));
+      i += 4;
+    } else if (e in SIMPLE_ESCAPES) cur += SIMPLE_ESCAPES[e];
+    else if (e === undefined) throw new Error('eData literal ends mid-escape');
+    else cur += e; // \' \" \\ and similar
+    i++;
   }
   if (inString) throw new Error('unterminated string in eData literal');
   if (!seenOpen) throw new Error('eData literal is not an array');
