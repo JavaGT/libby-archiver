@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { openLoan, fetchOpenbook, extractSpine, openKindFor } from './openbook.mjs';
 import { fetchPage, fetchReadResource, assetRefs } from './read.mjs';
-import { buildEpub } from './epub.mjs';
+import { writeEpub } from './epub.mjs';
 import { fetchThunderMedia, maxResCoverUrl, downloadCover } from './metadata.mjs';
 import { mapLimit } from './pool.mjs';
 import {
@@ -114,11 +114,12 @@ export async function archiveReadable(ctx, loan, outDir) {
     })
   ).filter(Boolean);
 
-  // 6. assemble the EPUB
+  // 6. assemble the EPUB — streamed to disk, so only the largest entry is resident at once
   log('   assembling EPUB...');
   const creators = openbook.creator ?? [];
   const author = creators.find((c) => /aut/i.test(c.role ?? ''))?.name || creators[0]?.name || loan.author;
-  const epub = buildEpub({
+  const epubPath = path.join(bookDir, `${sanitize(openbook.title?.main ?? loan.title)}.epub`);
+  const { bytes } = await writeEpub({
     meta: {
       identifier: openbook['-odread-buid'] || `libby-${loan.id}`,
       title: openbook.title?.main ?? loan.title,
@@ -132,10 +133,8 @@ export async function archiveReadable(ctx, loan, outDir) {
     cover: coverEntry,
     nav: buildNav(openbook, new Set(spine.map((s) => s.path))),
     fixedLayout,
-  });
-  const epubPath = path.join(bookDir, `${sanitize(openbook.title?.main ?? loan.title)}.epub`);
-  fs.writeFileSync(epubPath, epub);
-  log(`   ${(epub.length / 1e6).toFixed(1)} MB EPUB`);
+  }, epubPath);
+  log(`   ${(bytes / 1e6).toFixed(1)} MB EPUB`);
 
   // 7. normalized metadata + integrity + README
   writeJson(path.join(bookDir, 'metadata.json'), {
