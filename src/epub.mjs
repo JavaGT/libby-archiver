@@ -126,12 +126,13 @@ export function zip(entries) {
  * Yield the exact byte sequence zip() produces — header, name, payload per entry, then the
  * central directory + EOCD — so the archive can be streamed without ever holding the whole
  * thing (or two copies of it) in memory. Each encoded payload is released once consumed.
+ * `entries` may be an array or any (async) iterable of {name, data, store?} objects.
  */
 async function* zipChunks(entries) {
   const dir = []; // small per-entry metadata for the central directory
   let dataEnd = 0;
   let dirSize = 0;
-  for (const e of entries) {
+  for await (const e of entries) {
     const p = encodeEntry(e);
     p.offset = dataEnd;
     dataEnd += LOCAL_HDR_LEN + p.nameBuf.length + p.compLen;
@@ -159,6 +160,7 @@ async function* zipChunks(entries) {
  * Stream the same bytes zip() would return to `outPath`, capping memory at the largest
  * entry. Written to `outPath + '.part'` and renamed into place atomically on success
  * (mirrors util.writeFileAtomic); the .part is removed on any failure.
+ * @param {Iterable|AsyncIterable} entries {name, data, store?} entries (async sources stream in)
  * @returns {Promise<{bytes:number}>} total archive size
  */
 export async function writeZip(entries, outPath) {

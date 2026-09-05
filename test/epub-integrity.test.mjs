@@ -6,6 +6,7 @@
 //   - method pin: media stays STORED (the CPU win), text stays DEFLATED (the size win)
 //   - crc pin   : stored entries still carry correct CRCs (integrity is not skipped)
 //   - size pins : text still compresses hard, stored media adds no bloat
+//   - streaming : writeZip emits byte-identical output and never leaves a .part behind
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -14,7 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import zlib from 'node:zlib';
-import { buildEpub, zip } from '../src/epub.mjs';
+import { buildEpub, zip, entriesFor, writeZip, writeEpub } from '../src/epub.mjs';
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'libby-epub-'));
 const hasUnzip = () => {
@@ -120,4 +121,57 @@ test('size pin: storing a media payload must not inflate the archive beyond raw 
   const media = Buffer.alloc(100 * 1024, 5);
   const epub = zip([{ name: 'OEBPS/assets/a.jpg', data: media }]);
   assert.ok(epub.length <= media.length + 1024, `epub ${epub.length} vs raw ${media.length} — stored media must not grow`);
+});
+
+// ---- streaming writer (writeZip / writeEpub) ----------------------------------
+// The streaming path shares its encoders with zip(); byte-identity is the pin that
+// it can never silently diverge from the in-memory writer.
+
+test('writeZip output is byte-identical to zip() (shared encoders — the strong pin)', async () => {
+  const dir = tmp();
+  try {
+    const file = path.join(dir, 'book.epub');
+    const { bytes } = await writeZip(entriesFor(book()), file);
+    const streamed = fs.readFileSync(file);
+    assert.equal(bytes, streamed.length, 'reported byte count must match the file');
+    assert.ok(streamed.equals(buildEpub(book())), 'streamed bytes must equal the in-memory buffer');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('writeEpub output passes unzip -t, mimetype first + stored', { skip: !hasUnzip() && 'unzip unavailable' }, async () => {
+  const dir = tmp();
+  try {
+    const file = path.join(dir, 'book.epub');
+    await writeEpub(book(), file);
+    execFileSync('unzip', ['-t', file], { stdio: 'pipe' });
+    const first = localEntries(fs.readFileSync(file))[0];
+    assert.equal(first.name, 'mimetype');
+    assert.equal(first.method, 0);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('writeZip leaves no .part behind — after success and after a mid-write failure', async () => {
+  const dir = tmp();
+  try {
+    const ok = path.join(dir, 'ok.epub');
+    const { bytes } = await writeZip([{ name: 'a.xhtml', data: 'hi' }], ok);
+    assert.equal(fs.existsSync(ok), true, 'renamed into place on success');
+    assert.equal(fs.existsSync(`${ok}.part`), false);
+    assert.equal(bytes, fs.statSync(ok).size);
+
+    const bad = path.join(dir, 'bad.epub');
+    const flaky = async function* () {
+      yield { name: 'a.xhtml', data: 'first' };
+      throw new Error('injected mid-write failure');
+    };
+    await assert.rejects(() => writeZip(flaky(), bad), /injected mid-write failure/);
+    assert.equal(fs.existsSync(bad), false, 'no partial archive left at the target path');
+    assert.equal(fs.existsSync(`${bad}.part`), false, '.part removed on failure');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
