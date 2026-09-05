@@ -14,7 +14,7 @@
     "node": "v26.7.0",
     "cpu": "Apple M4"
   },
-  "rendered": "2026-09-05 21:41",
+  "rendered": "2026-09-06 10:05",
   "tldr": [
     {
       "value": "27×",
@@ -25,19 +25,19 @@
       "label": "EPUB peak RAM (108→71 MB)"
     },
     {
+      "value": "81×",
+      "label": "hash-once manifest pass"
+    },
+    {
       "value": "3.8×",
       "label": "network fetch pattern"
     },
     {
-      "value": "2.5×",
-      "label": "openbook decode"
+      "value": "16 waves",
+      "label": "14 merged · 2 measured & rejected"
     },
     {
-      "value": "15 waves",
-      "label": "13 merged · 2 measured & rejected"
-    },
-    {
-      "value": "59",
+      "value": "64",
       "label": "tests incl. e2e (was 28)"
     }
   ],
@@ -476,6 +476,40 @@
         "src/archive.mjs",
         "test/manifest-ref.test.mjs"
       ]
+    },
+    {
+      "id": "W16",
+      "name": "Disk-backed EPUB payloads (assembly RAM)",
+      "area": "library · RAM",
+      "status": "merged",
+      "change": "archiveReadable retained every decoded page body and asset buffer while assembling the EPUB — the whole book resident, and duplicated, even though the pages/assets were already written to disk. Entry payloads can now be thunks (() => read-from-disk) resolved once at encode time; the orchestrator passes lazy readers instead of buffers, so assembly no longer holds the book in RAM.",
+      "metrics": [
+        {
+          "name": "peak RSS producing 12.7 MB EPUB (buffer vs disk-backed entries)",
+          "before": 69,
+          "after": 55,
+          "unit": " MB",
+          "direction": "lower"
+        },
+        {
+          "name": "node process floor for reference",
+          "before": null,
+          "after": 48,
+          "unit": " MB",
+          "direction": "lower"
+        }
+      ],
+      "tradeoffs": [
+        "Resident payload memory now scales with the largest entry, not the book; the remaining 55 MB is mostly the Node floor (~48 MB)",
+        "A payload file vanishing between write and read fails the archive loudly mid-stream (ENOENT, .part cleaned) — pinned by test; wall time unchanged (≈206 ms both paths in the bench harness)",
+        "Methodology: fresh process per impl, RSS sampled at entry boundaries — one-shot RSS masks the win on macOS (freed pages are never returned)"
+      ],
+      "files": [
+        "src/epub.mjs",
+        "src/archive-read.mjs",
+        "test/ram-thunk.test.mjs",
+        "perf/zip-thunk-one.mjs"
+      ]
     }
   ],
   "baseline": {
@@ -570,6 +604,10 @@
     {
       "t": "09:52",
       "entry": "Wave 3 opened (perf-trial-20260906-093914, stop 11:00): W17 hash-once manifest merged (22.8→0.28 ms, 60/60 tests, audiobook e2e now validates the trusted-digest path). W16 disk-backed EPUB payloads in flight (1 subagent)."
+    },
+    {
+      "t": "10:02",
+      "entry": "W16 merged: disk-backed EPUB payloads (bench 69→55 MB, bytes identical, wall equal; lane also fixed a pre-existing dcterms:modified clock flake in the byte-identity pin). Wave 3 suite 64/64."
     }
   ]
 }
