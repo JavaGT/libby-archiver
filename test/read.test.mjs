@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cfc1, decodePage, namespaceSvg, assetRefs } from '../src/read.mjs';
+import { cfc1, decodePage, namespaceSvg, assetRefs, probeCfc1 } from '../src/read.mjs';
 
 test('cfc1 reverses the swapped-base64 blob', () => {
   const s = 'The quick brown fox — ünïcodé & <tags>';
@@ -95,4 +95,38 @@ test('cfc1 falls back to the code-unit path for any code unit > 127', () => {
   // and a longer mixed blob so the fallback handles multi-quad content
   const big = Buffer.from('VGVzdCBibG9i', 'base64').toString('latin1') + '\xe9'.repeat(9);
   assert.equal(cfc1(big), refCfc1(big));
+});
+
+// ---- obfuscation-drift canaries ------------------------------------------------
+// OverDrive changing the __bif_cfc1 permutation must fail LOUDLY at the named
+// stage, never as silent garbage pages.
+
+// A drifted cipher: swap chars 1<->2 instead of 1<->4 — what a changed
+// permutation looks like from our side.
+const driftedEncode = (s) =>
+  Buffer.from(s, 'utf8').toString('base64').replace(/(.)(.)(.)(.)/g, '$2$1$4$3');
+
+test('drift: a changed cipher permutation fails loudly, naming the contract', () => {
+  const body = '<svg viewBox="0 0 2 2"><rect/></svg>';
+  const html = `<html><script>parent.__bif_cfc1(self, '${driftedEncode(body)}');</script></html>`;
+  assert.throws(() => decodePage(html), /not markup.*__bif_cfc1 cipher appears to have drifted/is);
+});
+
+test('probeCfc1 reports per-stage health on healthy and drifted pages', () => {
+  const encode = (s) => Buffer.from(s, 'utf8').toString('base64').replace(/(.)(.)(.)(.)/g, '$4$2$3$1');
+
+  const healthy = probeCfc1(`<html><script>parent.__bif_cfc1(self, '${encode('<svg/>')}');</script></html>`);
+  assert.equal(healthy.ok, true);
+  assert.deepEqual(healthy.stages.map((s) => s.stage), ['cfc1-marker', 'content-shape']);
+  assert.ok(healthy.stages.every((s) => s.ok));
+
+  const drifted = probeCfc1(`<html><script>parent.__bif_cfc1(self, '${driftedEncode('<svg/>')}');</script></html>`);
+  assert.equal(drifted.ok, false);
+  const failed = drifted.stages.find((s) => !s.ok);
+  assert.equal(failed.stage, 'content-shape');
+  assert.match(failed.detail, /not '/);
+
+  const noMarker = probeCfc1('<html>error page</html>');
+  assert.equal(noMarker.ok, false);
+  assert.equal(noMarker.stages[0].stage, 'cfc1-marker');
 });

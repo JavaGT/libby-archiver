@@ -37,11 +37,12 @@ export {
   openKindFor,
   fetchOpenbook,
   decodeOpenbook,
+  probeEData,
   extractSpine,
 } from './openbook.mjs';
 
 // Read-host (ebook / magazine) content decode + EPUB packaging
-export { cfc1, decodePage, fetchPage, fetchReadResource, assetRefs } from './read.mjs';
+export { cfc1, decodePage, probeCfc1, fetchPage, fetchReadResource, assetRefs } from './read.mjs';
 export { buildEpub, zip, entriesFor, writeZip, writeEpub } from './epub.mjs';
 
 // Download + supplementary metadata

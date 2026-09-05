@@ -109,12 +109,45 @@ export function cfc1(blob) {
 
 /**
  * Decode a fetched read-host page into its `<body>…</body>` content.
- * Throws if the page carries no `__bif_cfc1` component (e.g. an error/placeholder page).
+ * Throws if the page carries no `__bif_cfc1` component (e.g. an error/placeholder page),
+ * or if the decoded body is not markup — the latter means the cipher drifted.
  */
 export function decodePage(html) {
+  const r = probeCfc1(html);
+  if (!r.ok) {
+    const failed = r.stages.find((s) => !s.ok);
+    if (failed.stage === 'cfc1-marker') throw new Error('page has no __bif_cfc1 component');
+    throw new Error(`decoded page body is not markup — the __bif_cfc1 cipher appears to have drifted (${failed.detail}); see README → Obfuscation drift`);
+  }
+  return r.body;
+}
+
+/**
+ * Decode a read-host page in named stages, so a cipher drift is reported as the
+ * exact broken contract. Stages: `cfc1-marker` (the page still calls
+ * parent.__bif_cfc1), `content-shape` (the deciphered body is markup).
+ *
+ * @returns {{ ok: true, stages: object[], body: string } | { ok: false, stages: object[] }}
+ */
+export function probeCfc1(html) {
+  const stages = [];
   const m = String(html).match(CFC1_RE);
-  if (!m) throw new Error('page has no __bif_cfc1 component');
-  return cfc1(m[1]);
+  stages.push({
+    stage: 'cfc1-marker',
+    ok: !!m,
+    detail: m ? undefined : "parent.__bif_cfc1(self, '…') call not found in page",
+  });
+  if (!m) return { ok: false, stages };
+
+  const body = cfc1(m[1]);
+  // A cipher drift never throws — it yields base64-ish garbage. Canary on markup-ness.
+  const markup = /^\s*</.test(body);
+  stages.push({
+    stage: 'content-shape',
+    ok: markup,
+    detail: markup ? undefined : `deciphered body starts with ${JSON.stringify(body[0] ?? '')}, not '<'`,
+  });
+  return markup ? { ok: true, stages, body } : { ok: false, stages };
 }
 
 /**

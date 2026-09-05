@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { decodeOpenbook, descramble, extractSpine, openKindFor } from '../src/openbook.mjs';
+import { decodeOpenbook, descramble, extractSpine, openKindFor, probeEData } from '../src/openbook.mjs';
 
 // Forward (encode) direction of bifocal's descramble: per position a with key digit d,
 // find the printable char whose scrambled output is the target char. The mapping is
@@ -126,4 +126,56 @@ test('descramble inverts the scramble at scale on the ASCII fast path', () => {
     .toString('base64')
     .repeat(1000);
   assert.equal(descramble('dcba9', scramble('dcba9', payload)), payload);
+});
+
+// ---- obfuscation-drift canaries ------------------------------------------------
+// OverDrive changing bifocal's scramble must fail LOUDLY at the named stage,
+// never as silent garbage. These encode fixtures with drifted constants to
+// simulate exactly that.
+
+// Same shape as `scramble` but with a drifted shift modulus (94 -> 95).
+function driftedScramble(key, data) {
+  let out = '';
+  for (let a = 0; a < data.length; a++) {
+    let ch = data.charCodeAt(a);
+    const d = parseFloat(key[a % key.length]);
+    if (d) {
+      ch += (a + d) % 95;
+      if (ch > 126) ch = (ch % 126) + 32;
+    }
+    out += String.fromCharCode(ch);
+  }
+  return out;
+}
+
+function driftedFixture(doc) {
+  const json = Buffer.from(JSON.stringify(doc)).toString('base64');
+  const scrambled = driftedScramble(BUID.split('').reverse().join(''), json);
+  return JSON.stringify(scrambled.split('"'));
+}
+
+test('drift: a changed scramble fails loudly, naming the contract', () => {
+  assert.throws(
+    () => decodeOpenbook(page(driftedFixture({ b: { ok: true } })), BUID),
+    /not JSON.*scramble.*drift/is,
+  );
+});
+
+test('probeEData reports per-stage health and names the drifted stage', () => {
+  const healthy = probeEData(page(encodedFixture({ b: { ok: 1 } })), BUID);
+  assert.equal(healthy.ok, true);
+  assert.deepEqual(healthy.stages.map((s) => s.stage), [
+    'eData-marker', 'eData-literal', 'eData-json', 'openbook-shape',
+  ]);
+  assert.ok(healthy.stages.every((s) => s.ok));
+
+  const drifted = probeEData(page(driftedFixture({ b: { ok: 1 } })), BUID);
+  assert.equal(drifted.ok, false);
+  const failed = drifted.stages.find((s) => !s.ok);
+  assert.equal(failed.stage, 'eData-json');
+  assert.match(failed.drift, /scramble/);
+
+  const noMarker = probeEData('<html>nothing here</html>', BUID);
+  assert.equal(noMarker.ok, false);
+  assert.equal(noMarker.stages[0].stage, 'eData-marker');
 });

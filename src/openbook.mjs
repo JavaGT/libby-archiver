@@ -195,16 +195,78 @@ function parseArrayLiteral(literal) {
   return out;
 }
 
-/** Decode the player page's window.eData array into the openbook (`.b`). */
-export function decodeOpenbook(playerHtml, buid) {
+/**
+ * Decode the player page's window.eData in named stages, so a wire-format drift
+ * (OverDrive changing bifocal's scramble or page structure) is reported as the
+ * exact broken contract instead of an opaque crash.
+ *
+ * Stages, in order: `eData-marker` (the page still embeds eData), `eData-literal`
+ * (the array of strings parses), `eData-json` (descramble + base64 + JSON.parse
+ * yield an object), `openbook-shape` (the object carries `.b`).
+ *
+ * @returns {{ ok: true, stages: object[], openbook: object } | { ok: false, stages: object[] }}
+ */
+export function probeEData(playerHtml, buid) {
+  const stages = [];
   const m = playerHtml.match(/window\.eData\s*=\s*(\[[\s\S]*?\])\s*;\s*SPARK\.bifocalPath/);
-  if (!m) throw new Error('window.eData not found in player page');
-  const eData = parseArrayLiteral(m[1]);
+  stages.push({
+    stage: 'eData-marker',
+    ok: !!m,
+    detail: m ? undefined : 'window.eData = [...];SPARK.bifocalPath block not found in page',
+  });
+  if (!m) return { ok: false, stages };
+
+  let parts;
+  try {
+    parts = parseArrayLiteral(m[1]);
+    stages.push({ stage: 'eData-literal', ok: true });
+  } catch (e) {
+    stages.push({ stage: 'eData-literal', ok: false, detail: e.message, drift: 'eData array literal shape changed' });
+    return { ok: false, stages };
+  }
+
   const key = buid.split('').reverse().join('');
-  const json = Buffer.from(descramble(key, eData.join('"')), 'base64').toString('utf8');
-  const doc = JSON.parse(json);
-  if (!doc.b) throw new Error('decoded openbook missing `.b`');
-  return doc.b;
+  const json = Buffer.from(descramble(key, parts.join('"')), 'base64').toString('utf8');
+  // A scramble drift never throws — it produces garbage text. Canary on JSON-ness.
+  if (!/^[\s{\[]/.test(json)) {
+    stages.push({
+      stage: 'eData-json',
+      ok: false,
+      detail: `decoded payload starts with ${JSON.stringify(json[0] ?? '')}, not JSON`,
+      drift: 'scramble changed (shift %94 / wrap %126+32 / reversed-buid key)',
+    });
+    return { ok: false, stages };
+  }
+  let doc;
+  try {
+    doc = JSON.parse(json);
+    stages.push({ stage: 'eData-json', ok: true });
+  } catch (e) {
+    stages.push({ stage: 'eData-json', ok: false, detail: e.message, drift: 'scramble changed (shift %94 / wrap %126+32 / reversed-buid key)' });
+    return { ok: false, stages };
+  }
+
+  stages.push({ stage: 'openbook-shape', ok: !!doc.b, detail: doc.b ? undefined : 'decoded openbook missing `.b`' });
+  if (!doc.b) return { ok: false, stages };
+  return { ok: true, stages, openbook: doc.b };
+}
+
+/**
+ * Decode the player page's window.eData array into the openbook (`.b`).
+ * Stages and their drift hints: see probeEData.
+ */
+export function decodeOpenbook(playerHtml, buid) {
+  const r = probeEData(playerHtml, buid);
+  const failed = r.stages.find((s) => !s.ok);
+  if (!r.ok) {
+    if (failed.stage === 'eData-marker') throw new Error('window.eData not found in player page');
+    if (failed.stage === 'openbook-shape') throw new Error('decoded openbook missing `.b`');
+    if (failed.stage === 'eData-json') {
+      throw new Error(`decoded eData payload is not JSON — the bifocal scramble appears to have drifted (${failed.detail}); see README → Obfuscation drift`);
+    }
+    throw new Error(`${failed.stage} failed: ${failed.detail}`);
+  }
+  return r.openbook;
 }
 
 /**

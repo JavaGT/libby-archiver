@@ -25,6 +25,7 @@
 //   --insecure-tls  disable TLS verification (for the mismatched-cert edge)
 
 import process from 'node:process';
+import fs from 'node:fs';
 import readline from 'node:readline';
 import { authenticate } from '../src/auth.mjs';
 import { sync, audiobookLoans, readableLoans } from '../src/loans.mjs';
@@ -34,6 +35,8 @@ import { searchCatalog } from '../src/search.mjs';
 import { getAvailability, getTitle } from '../src/discover.mjs';
 import { borrowTitle, returnTitle, placeHold, cancelHold } from '../src/checkout.mjs';
 import { SentryError } from '../src/sentry.mjs';
+import { probeEData } from '../src/openbook.mjs';
+import { probeCfc1 } from '../src/read.mjs';
 import { runInit } from '../src/init.mjs';
 import { loadConfig, configPath, sessionPath } from '../src/config.mjs';
 
@@ -53,6 +56,7 @@ Usage:
   libby archive --title <id>     archive a single title by id
   libby auth                     verify authentication only
   libby where                    show config + session locations
+  libby probe <saved.html>       check a saved player page for obfuscation drift
   libby help                     show this help
 
 Search/borrow/archive options:
@@ -76,7 +80,7 @@ First time? Run  libby init`;
 
 const COMMANDS = new Set([
   'init', 'search', 'info', 'avail', 'borrow', 'return', 'hold', 'unhold',
-  'list', 'archive', 'auth', 'where', 'help',
+  'list', 'archive', 'auth', 'where', 'probe', 'help',
 ]);
 
 function parseArgs(argv) {
@@ -161,6 +165,49 @@ function buildConfig(args) {
   return cfg;
 }
 
+/**
+ * Obfuscation-drift probe: run the staged decoders over a saved player page
+ * (right-click → Save in the browser, or devtools) and name the first contract
+ * that no longer holds. See README → Obfuscation drift.
+ */
+function runProbe(args) {
+  const file = args._[1];
+  if (!file) {
+    console.error('Usage: libby probe <saved-player-page.html> [--buid <buid>]');
+    console.error('--buid is the dewey-<buid> part of the listen host, needed to check the eData scramble.');
+    process.exit(2);
+  }
+  const html = fs.readFileSync(file, 'utf8');
+  let failed = false;
+
+  const report = (r) => {
+    for (const s of r.stages) {
+      console.log(`  ${s.ok ? 'ok  ' : 'FAIL'}  ${s.stage}${s.detail ? ` — ${s.detail}` : ''}`);
+      if (!s.ok && s.drift) console.log(`        drift: ${s.drift}`);
+      if (!s.ok) failed = true;
+    }
+    return r;
+  };
+
+  const rc = probeCfc1(html);
+  console.log('\nread page (__bif_cfc1 cipher):');
+  if (!rc.stages[0].ok) {
+    console.log('  skip  not a read page (no __bif_cfc1 call)');
+  } else report(rc);
+
+  if (args.buid) {
+    const re = report(probeEData(html, String(args.buid)));
+    if (re.ok) console.log(`        openbook title: ${re.openbook.title?.main ?? '?'}`);
+  } else {
+    console.log('\nlisten player (eData scramble): skipped — pass --buid <buid> (the dewey-<buid> part of the listen host) to check');
+  }
+
+  console.log(failed
+    ? '\nDrift detected — a wire-format contract above no longer holds.'
+    : '\nNo drift detected in the checked contracts.');
+  if (failed) process.exit(1);
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const command = args._[0] ?? 'help';
@@ -175,6 +222,7 @@ async function main() {
     console.log(`session: ${sessionPath()}`);
     return;
   }
+  if (command === 'probe') return runProbe(args);
   // Gate unknown commands BEFORE any network activity — a typo must never mint
   // chips or authenticate against OverDrive.
   if (!COMMANDS.has(command)) {

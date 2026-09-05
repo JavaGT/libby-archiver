@@ -199,8 +199,12 @@ lower-level pieces are exported too: `openLoan`, `fetchOpenbook`, `decodeOpenboo
 - **TLS.** On some networks the OverDrive read edge serves a cert for a different name. `init`
   detects that and turns on `insecureTLS` for that one host.
 - **Obfuscation drift.** The `window.eData` decode is tied to bifocal's current scramble, and
-  the ebook/magazine page decode to its `__bif_cfc1` cipher. If OverDrive changes either,
+  the ebook/magazine page decode to its `__bif_cfc1` cipher. If OverDrive changes either, archiving
+  fails with an error naming the broken contract (not a crash with garbage output).
   `descramble()` in `src/openbook.mjs` and `cfc1()` in `src/read.mjs` are the functions to fix.
+  To find out which contract moved, save the player page from your browser (right-click → Save,
+  or devtools) and run `libby probe saved-page.html` — add `--buid <buid>` (the `dewey-<buid>`
+  part of the listen host) to also check the scramble.
 
 ## Credits
 
