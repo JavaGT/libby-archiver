@@ -68,10 +68,14 @@ export function jsonRequest({
   timeoutMs = DEFAULT_TIMEOUT_MS,
 }) {
   const data = body === undefined ? null : JSON.stringify(body);
+  // `host` may carry an explicit port (`host:port`); https.request does not parse it.
+  const colon = host.indexOf(':');
+  const target = { host: colon === -1 ? host : host.slice(0, colon) };
+  if (colon !== -1) target.port = Number(host.slice(colon + 1));
   return new Promise((resolve, reject) => {
     const req = https.request(
       {
-        host,
+        ...target,
         path,
         method,
         agent: agentFor(insecureTLS),

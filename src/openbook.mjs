@@ -243,10 +243,15 @@ class CookieJar {
   }
   request(host, method, path, { headers } = {}) {
     const ck = this.cookieFor(host);
+    // `host` is URL.host and may carry a port (any non-443 deployment); https.request
+    // does not parse it, so split before connecting.
+    const colon = host.indexOf(':');
+    const target = { host: colon === -1 ? host : host.slice(0, colon) };
+    if (colon !== -1) target.port = Number(host.slice(colon + 1));
     return new Promise((resolve, reject) => {
       const req = https.request(
         {
-          host,
+          ...target,
           path,
           method,
           agent: this.agent,

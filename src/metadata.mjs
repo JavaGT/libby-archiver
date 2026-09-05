@@ -7,7 +7,9 @@
 import fs from 'node:fs';
 import { fetchBuffer, getJson } from './http.mjs';
 
-const THUNDER = 'thunder.api.overdrive.com';
+// Overridable so end-to-end tests can point the catalog at a local sim
+// (LIBBY_THUNDER_HOST carries `host` or `host:port`).
+const THUNDER = process.env.LIBBY_THUNDER_HOST || 'thunder.api.overdrive.com';
 
 /** Fetch the Thunder media record for a title. Returns parsed JSON (or null on failure). */
 export async function fetchThunderMedia(library, titleId, { insecureTLS = false } = {}) {

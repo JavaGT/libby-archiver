@@ -13,7 +13,7 @@ import crypto from 'node:crypto';
 
 let certCache;
 
-function selfSignedCert() {
+export function selfSignedCert() {
   if (certCache) return certCache;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libby-sim-'));
   try {
