@@ -60,23 +60,27 @@ export async function archiveAudiobook(ctx, loan, outDir) {
   // 3. raw loan record
   writeJson(path.join(bookDir, 'loan.json'), loan.raw, { secret: true });
 
-  // 4. supplementary metadata + cover
+  // 4. supplementary metadata + cover — started (not awaited) so both catalog round
+  // trips run while the parts download below; each is awaited where its result is first
+  // needed (thunder at step 6, the cover before the manifest). fetchThunderMedia never
+  // throws (null on failure), and cover failures are caught + logged exactly as before.
   log('   fetching catalog metadata...');
-  const thunder = await fetchThunderMedia(cfg.library, loan.id, {
+  const thunderP = fetchThunderMedia(cfg.library, loan.id, {
     insecureTLS: cfg.insecureTLS,
-  });
-  if (thunder) writeJson(path.join(bookDir, 'thunder.json'), thunder);
-  const coverUrl = maxResCoverUrl(thunder, loan.coverUrl);
-  if (coverUrl) {
-    try {
-      await downloadCover(coverUrl, path.join(bookDir, 'cover.jpg'), {
-        insecureTLS: cfg.insecureTLS,
-      });
-      log('   cover saved');
-    } catch (e) {
-      log(`   cover failed: ${e.message}`);
+  }).catch(() => null);
+  const coverP = thunderP.then(async (thunder) => {
+    const coverUrl = maxResCoverUrl(thunder, loan.coverUrl);
+    if (coverUrl) {
+      try {
+        await downloadCover(coverUrl, path.join(bookDir, 'cover.jpg'), {
+          insecureTLS: cfg.insecureTLS,
+        });
+        log('   cover saved');
+      } catch (e) {
+        log(`   cover failed: ${e.message}`);
+      }
     }
-  }
+  });
 
   // 5. download spine parts — 3 at a time (bounded, CDN-polite); parts are independent
   // files, and mapLimit keeps partFiles in spine order for the manifest. downloadPart
@@ -103,6 +107,8 @@ export async function archiveAudiobook(ctx, loan, outDir) {
   });
 
   // 6. normalized metadata summary (openbook is authoritative for audio structure)
+  const thunder = await thunderP; // first result needed here — long since settled
+  if (thunder) writeJson(path.join(bookDir, 'thunder.json'), thunder);
   const creators = openbook.creator ?? [];
   const roleNames = (re) => creators.filter((c) => re.test(c.role ?? '')).map((c) => c.name);
   const spineToIndex = spine.map((p) => p.path);
@@ -129,8 +135,9 @@ export async function archiveAudiobook(ctx, loan, outDir) {
     archivedAt: new Date().toISOString(),
   });
 
-  // 7. integrity manifest + README — parts arrive pre-hashed (step 5), so only the
-  // small sidecars are re-read here
+  // 7. integrity manifest + README — parts arrive pre-hashed (step 5) and the cover is
+  // settled (step 4), so only the small sidecars are re-read here
+  await coverP; // cover.jpg must be complete before it is hashed
   await writeManifest(bookDir, { known: partHashes });
   fs.writeFileSync(
     path.join(bookDir, 'README.txt'),

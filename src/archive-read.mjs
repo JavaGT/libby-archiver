@@ -67,22 +67,26 @@ export async function archiveReadable(ctx, loan, outDir) {
 
   writeJson(path.join(bookDir, 'loan.json'), loan.raw, { secret: true });
 
-  // 3. catalog metadata + cover
+  // 3. catalog metadata + cover — started (not awaited) so both round trips run while
+  // the pages/assets download below; thunder is awaited before the EPUB/metadata writes
+  // and coverEntry before assembly. fetchThunderMedia never throws (null on failure),
+  // and cover failures are caught + logged exactly as before.
   log('   fetching catalog metadata...');
-  const thunder = await fetchThunderMedia(cfg.library, loan.id, { insecureTLS: cfg.insecureTLS });
-  if (thunder) writeJson(path.join(bookDir, 'thunder.json'), thunder);
+  const thunderP = fetchThunderMedia(cfg.library, loan.id, { insecureTLS: cfg.insecureTLS }).catch(() => null);
   let coverEntry = null;
-  const coverUrl = maxResCoverUrl(thunder, loan.coverUrl);
-  if (coverUrl) {
-    try {
-      const coverPath = path.join(bookDir, 'cover.jpg');
-      await downloadCover(coverUrl, coverPath, { insecureTLS: cfg.insecureTLS });
-      coverEntry = { path: 'cover.jpg', data: () => fs.readFileSync(coverPath) };
-      log('   cover saved');
-    } catch (e) {
-      log(`   cover failed: ${e.message}`);
+  const coverP = thunderP.then(async (thunder) => {
+    const coverUrl = maxResCoverUrl(thunder, loan.coverUrl);
+    if (coverUrl) {
+      try {
+        const coverPath = path.join(bookDir, 'cover.jpg');
+        await downloadCover(coverUrl, coverPath, { insecureTLS: cfg.insecureTLS });
+        coverEntry = { path: 'cover.jpg', data: () => fs.readFileSync(coverPath) };
+        log('   cover saved');
+      } catch (e) {
+        log(`   cover failed: ${e.message}`);
+      }
     }
-  }
+  });
 
   // 4. fetch + decode pages — 4 at a time (otherwise a magazine is hundreds of serial
   // round trips); mapLimit keeps pageEntries in spine order. Logs report decoded pages.
@@ -130,12 +134,17 @@ export async function archiveReadable(ctx, loan, outDir) {
   ).filter(Boolean);
 
   // 6. assemble the EPUB — streamed to disk entry by entry; each payload thunk reads its
-  // page/asset off bookDir, so no more than one entry is resident at a time
+  // page/asset off bookDir, so no more than one entry is resident at a time. The catalog
+  // work from step 3 is collected here (it ran concurrently with the downloads above).
   log('   assembling EPUB...');
+  const thunder = await thunderP;
+  await coverP; // coverEntry must be settled before assembly decides whether it is included
+  if (thunder) writeJson(path.join(bookDir, 'thunder.json'), thunder);
   const creators = openbook.creator ?? [];
   const author = creators.find((c) => /aut/i.test(c.role ?? ''))?.name || creators[0]?.name || loan.author;
-  const epubPath = path.join(bookDir, `${sanitize(openbook.title?.main ?? loan.title)}.epub`);
-  const { bytes } = await writeEpub({
+  const epubName = `${sanitize(openbook.title?.main ?? loan.title)}.epub`;
+  const epubPath = path.join(bookDir, epubName);
+  const { bytes, sha256 } = await writeEpub({
     meta: {
       identifier: openbook['-odread-buid'] || `libby-${loan.id}`,
       title: openbook.title?.main ?? loan.title,
@@ -152,7 +161,9 @@ export async function archiveReadable(ctx, loan, outDir) {
   }, epubPath);
   log(`   ${(bytes / 1e6).toFixed(1)} MB EPUB`);
 
-  // 7. normalized metadata + integrity + README
+  // 7. normalized metadata + integrity + README — the EPUB was hashed while streaming
+  // (writeZip), so the manifest skips re-reading it; for a big magazine that is the
+  // largest file in the archive. The rel path is the EPUB's basename.
   writeJson(path.join(bookDir, 'metadata.json'), {
     titleId: loan.id,
     cardId: loan.cardId,
@@ -171,7 +182,7 @@ export async function archiveReadable(ctx, loan, outDir) {
     expires: loan.expires,
     archivedAt: new Date().toISOString(),
   });
-  await writeManifest(bookDir);
+  await writeManifest(bookDir, { known: { [epubName]: sha256 } });
   fs.writeFileSync(path.join(bookDir, 'README.txt'), readmeText(loan, spine.length, assetEntries.length), 'utf8');
 
   log(`   done: ${bookDir}`);
