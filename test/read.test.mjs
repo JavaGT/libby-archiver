@@ -79,3 +79,20 @@ test('cfc1 matches the regex on a deterministic sweep of hostile inputs', () => 
     assert.equal(cfc1(s), refCfc1(s), `iter ${iter}: ${JSON.stringify(s)}`);
   }
 });
+
+test('cfc1 falls back to the code-unit path for any code unit > 127', () => {
+  // The latin1 byte fast path is only lossless for pure ASCII (all code units
+  // <= 127); anything above — including lone surrogates and U+2028/U+2029 — must
+  // take the exact code-unit path. Pin the gate by comparing to the regex reference.
+  const cases = [
+    'QUJD\xe9RA*', // latin1-range char (U+00E9, 233) -> fallback, though latin1-lossless
+    'QUJD\u20ac', // U+20AC (8364), above the latin1 range entirely
+    'aA=\ud83d\ude00bcdef', // astral char = surrogate pair (both units > 127)
+    '\u2028abc\r\nQUJD', // U+2028 is itself above 127 -> fallback, not the byte path
+    'ab\x00cd\x7fef', // NUL and 0x7f stay INSIDE the fast path (pure ASCII)
+  ];
+  for (const s of cases) assert.equal(cfc1(s), refCfc1(s), JSON.stringify(s));
+  // and a longer mixed blob so the fallback handles multi-quad content
+  const big = Buffer.from('VGVzdCBibG9i', 'base64').toString('latin1') + '\xe9'.repeat(9);
+  assert.equal(cfc1(big), refCfc1(big));
+});
