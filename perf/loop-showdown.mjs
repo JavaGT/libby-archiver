@@ -1,15 +1,15 @@
 // W23 loop showdown: alternative inner loops for cfc1 (src/read.mjs) and
 // descramble (src/openbook.mjs), measured head-to-head in ONE process.
 //
-// Every alternative is defined here inline; only a winner gets promoted into src/.
-// Each run's output is verified byte-identical to the current implementation's
-// (cfc1 is imported from src; descramble is an exact copy of the current private
-// function, pinned by test/openbook.test.mjs round trips).
+// Every alternative is defined here inline; only winners got promoted into src/.
+// Each run's output is verified identical to the reference. The pre-W23 pipelines
+// are copied inline; src/read.mjs's exported cfc1 is also benched as "current" so
+// the adopted fast path stays honest against the old baseline on every rerun.
 //
 // Run: node perf/loop-showdown.mjs   (prints a JSON table)
 
 import { randomFillSync } from 'node:crypto';
-import { cfc1 as cfc1Current } from '../src/read.mjs';
+import { cfc1 as cfc1Src } from '../src/read.mjs';
 
 // ---- inputs ------------------------------------------------------------------
 
@@ -35,7 +35,7 @@ const KEYS = {
 // ---- shared current implementations -------------------------------------------
 
 // Exact copy of the current swapQuads (src/read.mjs) for use as a fallback inside
-// string-level variants. Verified against cfc1Current on every bench run.
+// string-level variants. Verified against the src export on every bench run.
 function swapQuads(s) {
   const n = s.length;
   if (n < 4) return s;
@@ -64,7 +64,8 @@ function swapQuads(s) {
   return out;
 }
 
-// Exact copy of the current descramble (src/openbook.mjs).
+// Exact copy of the current descramble as of pre-W23 (src/openbook.mjs), kept as
+// the baseline row and as the expected-output reference for every variant.
 function descrambleCurrent(key, data) {
   const klen = key.length;
   const shifts = new Array(klen);
@@ -84,6 +85,10 @@ function descrambleCurrent(key, data) {
 
 // ---- cfc1 alternatives ---------------------------------------------------------
 
+// Pre-W23 pipeline (code-unit swapQuads + native base64): exact for any string,
+// so the variants below use it as their non-ASCII fallback.
+const cfc1PreW23 = (blob) => Buffer.from(swapQuads(blob), 'base64').toString('utf8');
+
 // Pure-ASCII gate: Buffer.byteLength(s,'utf8') === s.length iff every code unit
 // is <= 127 — a single native scan. (Probe confirmed latin1 byteLength does NOT
 // detect >255 chars, so utf8 length equality is the cheap reliable test.)
@@ -91,7 +96,7 @@ const isAscii = (s) => Buffer.byteLength(s, 'utf8') === s.length;
 
 // (a) latin1 byte path, general terminator-skipping swap (mirrors engine retries).
 function cfc1Latin1Skip(blob) {
-  if (!isAscii(blob)) return cfc1Current(blob); // code-unit path is always correct
+  if (!isAscii(blob)) return cfc1PreW23(blob);
   const buf = Buffer.from(blob, 'latin1');
   const n = buf.length;
   let i = 0;
@@ -117,7 +122,7 @@ function cfc1Latin1Skip(blob) {
 // (every real blob), the swap is a branch-free tight loop. \u2028/\u2029 cannot
 // reach the byte path (they are >127, so the gate falls back).
 function cfc1Latin1Fast(blob) {
-  if (!isAscii(blob)) return cfc1Current(blob);
+  if (!isAscii(blob)) return cfc1PreW23(blob);
   const buf = Buffer.from(blob, 'latin1');
   const n = buf.length;
   if (n >= 4 && buf.indexOf(10) === -1 && buf.indexOf(13) === -1) {
@@ -198,7 +203,7 @@ function b64DecodeBytes(buf) {
   return out.subarray(0, o);
 }
 function cfc1Latin1JsB64(blob) {
-  if (!isAscii(blob)) return cfc1Current(blob);
+  if (!isAscii(blob)) return cfc1PreW23(blob);
   const buf = Buffer.from(blob, 'latin1');
   const n = buf.length;
   if (n >= 4 && buf.indexOf(10) === -1 && buf.indexOf(13) === -1) {
@@ -368,23 +373,24 @@ console.log(`blob ${(BLOB.length / 1e6).toFixed(2)} MB, data ${(DESC_DATA.length
 const detection_ms = benchDetection();
 
 const cfc1Variants = [
-  { name: 'current (u16 swapQuads)', fn: cfc1Current },
+  { name: 'pre-W23 (u16 swapQuads pipeline)', fn: cfc1PreW23 },
+  { name: 'current (src/read.mjs, W23 adopted)', fn: cfc1Src },
   { name: 'latin1 skip-loop', fn: cfc1Latin1Skip },
   { name: 'latin1 indexOf fast', fn: cfc1Latin1Fast },
   { name: 'u16 tight (regex noterm)', fn: cfc1U16Tight },
   { name: 'latin1 + JS base64', fn: cfc1Latin1JsB64 },
 ];
-const cfc1Expected = cfc1Current(BLOB);
+const cfc1Expected = cfc1Src(BLOB);
 const cfc1Results = benchSet(
   cfc1Variants.map(({ name, fn }) => ({ name, fn: () => fn(BLOB) })),
   cfc1Expected,
 );
 
 const descrambleVariants = [
-  { name: 'current (array of 1-char strings + join)', fn: descrambleCurrent },
+  { name: 'pre-W23 (1-char strings + join)', fn: descrambleCurrent },
   { name: 'u16 + fromCharCode strides', fn: descrambleU16 },
   { name: 'run-slice pass-through', fn: descrambleRunSlice },
-  { name: 'latin1 bytes in place', fn: descrambleByte },
+  { name: 'latin1 bytes in place (W23 adopted)', fn: descrambleByte },
 ];
 const descrambleResults = {};
 for (const [kname, key] of Object.entries(KEYS)) {
