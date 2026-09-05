@@ -14,7 +14,7 @@
     "node": "v26.7.0",
     "cpu": "Apple M4"
   },
-  "rendered": "2026-09-06 09:20",
+  "rendered": "2026-09-05 21:41",
   "tldr": [
     {
       "value": "27×",
@@ -450,6 +450,32 @@
         "src/http.mjs",
         "src/metadata.mjs"
       ]
+    },
+    {
+      "id": "W17",
+      "name": "Hash-once integrity pass",
+      "area": "library · CPU + speed",
+      "status": "merged",
+      "change": "downloadPart already computes each part’s sha256 while streaming, and archive.mjs was throwing it away — so writeManifest re-read the entire book to hash what had just been hashed. Part digests are now carried into writeManifest(dir, { known }), which trusts exact digests for matching files and only re-reads content nobody hashed (sidecars, cover, README).",
+      "metrics": [
+        {
+          "name": "integrity pass, 50 MB archive, digests known",
+          "before": 22.8,
+          "after": 0.28,
+          "unit": " ms",
+          "direction": "lower"
+        }
+      ],
+      "tradeoffs": [
+        "Known digests are trusted, not re-verified (re-verifying would defeat the purpose); a streaming writer bug would surface as a bad manifest — the e2e suite validates every manifest line against file contents to police exactly this",
+        "Skipped (already-present) parts have no digest and are re-hashed as before — correct, since their bytes were not observed this run",
+        "Warm-cache M4 numbers; on cold caches the win is a full re-read of the book avoided"
+      ],
+      "files": [
+        "src/util.mjs",
+        "src/archive.mjs",
+        "test/manifest-ref.test.mjs"
+      ]
     }
   ],
   "baseline": {
@@ -540,6 +566,10 @@
     {
       "t": "09:20",
       "entry": "Wave 2 closed: 3 merged (W12, W13, W15), 1 rejected (W14). Everything lives on perf-trial-20260906-083640 (contains wave 1 + wave 2, linear history)."
+    },
+    {
+      "t": "09:52",
+      "entry": "Wave 3 opened (perf-trial-20260906-093914, stop 11:00): W17 hash-once manifest merged (22.8→0.28 ms, 60/60 tests, audiobook e2e now validates the trusted-digest path). W16 disk-backed EPUB payloads in flight (1 subagent)."
     }
   ]
 }
