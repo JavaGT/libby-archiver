@@ -3,7 +3,9 @@
 //
 // Two output paths share one encoder: zip() / buildEpub() return the archive as a single
 // Buffer; writeZip() / writeEpub() stream the identical bytes to disk, holding only the
-// largest entry's payload in memory at a time.
+// largest entry's payload in memory at a time. Entry payloads may also be thunks —
+// () => Buffer — resolved only when that entry is encoded, so callers (archive-read) can
+// back pages/assets with disk reads instead of holding the whole book resident.
 //
 // Fixed-layout (magazines / pre-paginated ebooks) get rendition:layout=pre-paginated and a
 // per-page viewport so the SVG scans render at their true size; reflowable ebooks omit it.
@@ -22,10 +24,20 @@ const LOCAL_HDR_LEN = 30; // local file header
 const CD_HDR_LEN = 46; // central directory record
 const EOCD_LEN = 22; // end of central directory
 
+/**
+ * Resolve an entry payload. Payloads may be given eagerly (Buffer/string) or as a
+ * zero-argument thunk returning the payload — thunks resolve exactly here, when the
+ * entry is encoded (once per entry), so the entry list itself can stay payload-free.
+ */
+function resolveData(data) {
+  const d = typeof data === 'function' ? data() : data;
+  return Buffer.isBuffer(d) ? d : Buffer.from(d, 'utf8');
+}
+
 /** Encode one entry: utf8 name, native CRC, and the compressed payload (stored where useless). */
 function encodeEntry(e) {
   const nameBuf = Buffer.from(e.name, 'utf8');
-  const raw = Buffer.isBuffer(e.data) ? e.data : Buffer.from(e.data, 'utf8');
+  const raw = resolveData(e.data);
   const store = e.store || raw.length === 0 || STORE_EXT.has(e.name.split('.').pop().toLowerCase());
   // level 6 over 9: ~2x faster, within ~2% on text (xhtml/opf/ncx) — deliberate tradeoff
   const comp = store ? raw : zlib.deflateRawSync(raw, { level: 6 });
@@ -93,7 +105,7 @@ function putEocd(out, at, count, dirSize, dirStart) {
 }
 
 /**
- * @param {{name:string,data:Buffer|string,store?:boolean}[]} entries
+ * @param {{name:string,data:Buffer|string|(()=>Buffer|string),store?:boolean}[]} entries
  * @returns {Buffer} the archive, assembled in one preallocated buffer
  */
 export function zip(entries) {
@@ -126,7 +138,8 @@ export function zip(entries) {
  * Yield the exact byte sequence zip() produces — header, name, payload per entry, then the
  * central directory + EOCD — so the archive can be streamed without ever holding the whole
  * thing (or two copies of it) in memory. Each encoded payload is released once consumed.
- * `entries` may be an array or any (async) iterable of {name, data, store?} objects.
+ * `entries` may be an array or any (async) iterable of {name, data, store?} objects, with
+ * `data` eager (Buffer/string) or a thunk resolved once, at this entry's turn to encode.
  */
 async function* zipChunks(entries) {
   const dir = []; // small per-entry metadata for the central directory
@@ -228,18 +241,26 @@ function wrapPage(body, { viewport } = {}) {
   );
 }
 
+/** A spine page's decoded body as text: `{data}` (Buffer/string/thunk — the on-disk shape) or legacy eager `{body}`. */
+function pageBodyOf(p) {
+  if (p.data === undefined) return p.body;
+  const d = typeof p.data === 'function' ? p.data() : p.data;
+  return Buffer.isBuffer(d) ? d.toString('utf8') : String(d);
+}
+
 /**
  * Ordered EPUB entry list (mimetype first, container.xml, pages, assets, cover, nav.xhtml,
  * toc.ncx, content.opf) — the single source of truth for assembly, shared by buildEpub()
  * and writeEpub().
  * @param {object} book
  * @param {{title:string,subtitle?:string,creator?:string,language?:string,description?:string,identifier:string}} book.meta
- * @param {{path:string,body:string,viewport?:{width:number,height:number}}[]} book.spine  decoded page bodies
- * @param {{path:string,data:Buffer}[]} book.assets
- * @param {{path:string,data:Buffer}|null} [book.cover]
+ * @param {{path:string,body:string,viewport?:{width:number,height:number}}|{path:string,data:Buffer|string|(()=>Buffer|string),viewport?:{width:number,height:number}}} book.spine
+ *     decoded pages — `{body}` eager text, or `{data}` eager/thunk payload (the archived on-disk shape)
+ * @param {{path:string,data:Buffer|(()=>Buffer)}[]} book.assets
+ * @param {{path:string,data:Buffer|(()=>Buffer)}|null} [book.cover]
  * @param {{title:string,href:string}[]} [book.nav]  TOC entries (href = a spine path)
  * @param {boolean} [book.fixedLayout]
- * @returns {{name:string,data:Buffer|string,store?:boolean}[]}
+ * @returns {{name:string,data:Buffer|string|(()=>Buffer|string),store?:boolean}[]}
  */
 export function entriesFor(book) {
   const { meta, spine, assets = [], cover = null, nav = [], fixedLayout = false } = book;
@@ -263,9 +284,13 @@ export function entriesFor(book) {
   const assetItems = assets.map((a) => ({ id: idFor(a.path, used), href: a.path, data: a.data }));
   const coverItem = cover ? { id: idFor(cover.path, used), href: cover.path, data: cover.data } : null;
 
-  // page XHTML files
+  // page XHTML files — the wrapped body is a thunk too, so disk-backed spine payloads
+  // ({data: () => read}) resolve only when their entry is encoded
   for (const it of pageItems) {
-    files.push({ name: safeZipName(`OEBPS/${it.href}`), data: wrapPage(it.part.body, { viewport: it.part.viewport }) });
+    files.push({
+      name: safeZipName(`OEBPS/${it.href}`),
+      data: () => wrapPage(pageBodyOf(it.part), { viewport: it.part.viewport }),
+    });
   }
   for (const it of assetItems) files.push({ name: safeZipName(`OEBPS/${it.href}`), data: it.data });
   if (coverItem) files.push({ name: safeZipName(`OEBPS/${coverItem.href}`), data: coverItem.data });
