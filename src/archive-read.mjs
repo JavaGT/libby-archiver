@@ -11,6 +11,12 @@
 //     README.txt                       provenance note
 //
 // Pages come off the read host ciphered with __bif_cfc1 (see read.mjs); assets are plaintext.
+//
+// Payloads are never retained in memory: every decoded page/asset/cover is written to
+// bookDir first, and the EPUB entries hold disk-backed thunks (data: () => fs.readFileSync)
+// that the streaming zip writer resolves one entry at a time. The on-disk copy is the
+// source of truth — if a payload file vanishes between write and assembly, the read throws
+// and the archive fails loudly (no partial EPUB is left behind).
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -71,7 +77,7 @@ export async function archiveReadable(ctx, loan, outDir) {
     try {
       const coverPath = path.join(bookDir, 'cover.jpg');
       await downloadCover(coverUrl, coverPath, { insecureTLS: cfg.insecureTLS });
-      coverEntry = { path: 'cover.jpg', data: fs.readFileSync(coverPath) };
+      coverEntry = { path: 'cover.jpg', data: () => fs.readFileSync(coverPath) };
       log('   cover saved');
     } catch (e) {
       log(`   cover failed: ${e.message}`);
@@ -81,6 +87,8 @@ export async function archiveReadable(ctx, loan, outDir) {
   // 4. fetch + decode pages — 4 at a time (otherwise a magazine is hundreds of serial
   // round trips); mapLimit keeps pageEntries in spine order. Logs report decoded pages.
   // Page paths come from the openbook — they are validated to stay inside bookDir.
+  // Each body lives only for this callback: written to disk, refs collected, then dropped —
+  // assembly re-reads pages off disk via the entry thunks.
   const pageEntries = await mapLimit(spine, 4, async (part) => {
     const body = await fetchPage(part, { cookie, insecureTLS: cfg.insecureTLS });
     // keep each page at its original openbook path so relative ../assets refs stay correct
@@ -88,14 +96,20 @@ export async function archiveReadable(ctx, loan, outDir) {
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     fs.writeFileSync(dest, body, 'utf8');
     log(`   decoded page ${part.index}/${spine.length}`);
-    return { path: part.path, body, viewport: viewportOf(openbook, part) };
+    return {
+      path: part.path,
+      viewport: viewportOf(openbook, part),
+      data: () => fs.readFileSync(dest),
+      refs: [...assetRefs(body)], // asset paths, in body order (kept; bodies are not)
+    };
   });
 
   // assets referenced by any decoded page, in first-seen page order
   const wantedAssets = new Set();
-  for (const { body } of pageEntries) for (const ref of assetRefs(body)) wantedAssets.add(ref); // normalized 'assets/xxx.jpg'
+  for (const { refs } of pageEntries) for (const ref of refs) wantedAssets.add(ref); // normalized 'assets/xxx.jpg'
 
-  // 5. fetch each unique asset (plaintext) — 4 at a time
+  // 5. fetch each unique asset (plaintext) — 4 at a time; like pages, the body is written
+  // to disk and dropped, and the EPUB entry re-reads it lazily
   const assetList = [...wantedAssets];
   const assetEntries = (
     await mapLimit(assetList, 4, async (ref, i) => {
@@ -109,12 +123,14 @@ export async function archiveReadable(ctx, loan, outDir) {
         log(`   asset ${ref} -> HTTP ${res.status} (skipped)`);
         return null;
       }
-      fs.writeFileSync(path.join(assetsDir, name), res.body);
-      return { path: `assets/${name}`, data: res.body };
+      const dest = path.join(assetsDir, name);
+      fs.writeFileSync(dest, res.body);
+      return { path: `assets/${name}`, data: () => fs.readFileSync(dest) };
     })
   ).filter(Boolean);
 
-  // 6. assemble the EPUB — streamed to disk, so only the largest entry is resident at once
+  // 6. assemble the EPUB — streamed to disk entry by entry; each payload thunk reads its
+  // page/asset off bookDir, so no more than one entry is resident at a time
   log('   assembling EPUB...');
   const creators = openbook.creator ?? [];
   const author = creators.find((c) => /aut/i.test(c.role ?? ''))?.name || creators[0]?.name || loan.author;
