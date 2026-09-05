@@ -14,7 +14,7 @@
     "node": "v26.7.0",
     "cpu": "Apple M4"
   },
-  "rendered": "2026-09-06 10:05",
+  "rendered": "2026-09-06 10:41",
   "tldr": [
     {
       "value": "27×",
@@ -33,11 +33,11 @@
       "label": "network fetch pattern"
     },
     {
-      "value": "16 waves",
-      "label": "14 merged · 2 measured & rejected"
+      "value": "20 waves",
+      "label": "18 merged · 2 measured & rejected"
     },
     {
-      "value": "64",
+      "value": "65",
       "label": "tests incl. e2e (was 28)"
     }
   ],
@@ -540,6 +540,55 @@
       "files": [
         "perf/storage-sidecars.mjs"
       ]
+    },
+    {
+      "id": "W18",
+      "name": "Streamed EPUB digest (no re-read at manifest time)",
+      "area": "library · CPU + speed",
+      "status": "merged",
+      "change": "writeZip hashes every byte as it streams and returns { bytes, sha256 }; archiveReadable feeds that digest into writeManifest({ known }) keyed by the EPUB basename. The largest file in a magazine archive is no longer re-read and re-hashed by the integrity pass.",
+      "metrics": [
+        {
+          "name": "EPUB re-read+hash at manifest time",
+          "before": "full file",
+          "after": "eliminated",
+          "unit": "",
+          "direction": "lower"
+        }
+      ],
+      "tradeoffs": [
+        "Same trusted-digest contract as W17 — the magazine e2e re-hashes every manifest line against file contents on the real path, which is the acceptance",
+        "Digest correctness pinned: writeZip sha256 must equal a fresh re-hash of the written file"
+      ],
+      "files": [
+        "src/epub.mjs",
+        "src/archive-read.mjs",
+        "test/epub-integrity.test.mjs"
+      ]
+    },
+    {
+      "id": "W20",
+      "name": "Catalog round trips overlap downloads",
+      "area": "interface · wall-clock",
+      "status": "merged",
+      "change": "The thunder metadata fetch + cover download ran strictly before the download loops in both orchestrators; they are now started before and awaited where first needed — ~2 serial round trips (~200–400 ms against OverDrive) come off every archived loan.",
+      "metrics": [
+        {
+          "name": "serial RTTs per archived loan",
+          "before": 2,
+          "after": 0,
+          "unit": "",
+          "direction": "lower"
+        }
+      ],
+      "tradeoffs": [
+        "Only observable change: catalog log lines can interleave with download logs (message content unchanged)",
+        "Failure semantics preserved exactly: thunder null-tolerant, cover keeps its try/catch + log; both promises always awaited (no unhandled-rejection window)"
+      ],
+      "files": [
+        "src/archive.mjs",
+        "src/archive-read.mjs"
+      ]
     }
   ],
   "baseline": {
@@ -585,10 +634,10 @@
     }
   },
   "adoption": [
-    "Everything from both waves lives on branch <code>perf-trial-20260906-083640</code> (branched from wave-1 tip 03d0921, which holds waves W1–W11). Each wave is an independent commit; <code>main</code> is untouched.",
-    "To adopt everything: <code>git merge perf-trial-20260906-083640</code> from main (fast-forward). package.json engines is now <code>&gt;=20.15</code> (zlib.crc32).",
-    "Behavioral deltas: EPUB bytes differ from baseline by design (stored media, level-6 text) but stay spec-valid and ~0.2% smaller; the EPUB write path is async (writeEpub); page/asset logs report completions; everything else is byte-identical (manifests, decoded content).",
-    "Reproducible: <code>node --test</code> (59), <code>node --expose-gc perf/bench.mjs</code>, <code>node perf/net-sim.mjs src current</code>, <code>node --expose-gc perf/zip-stream-one.mjs zip|writeZip</code>. Lane notes: perf-notes-cpu.md / perf-notes-net.md / perf-notes-ram.md."
+    "Everything from all waves lives on branch <code>perf-trial-20260906-103453</code> (branched from the wave-3 tip, which holds waves W1–W17). Each wave is an independent commit; <code>main</code> is untouched.",
+    "To adopt everything: <code>git merge perf-trial-20260906-103453</code> from main (fast-forward). package.json engines is <code>&gt;=20.15</code> (zlib.crc32).",
+    "Behavioral deltas: EPUB bytes differ from baseline by design (stored media, level-6 text) but stay spec-valid and ~0.2% smaller; the EPUB write path is async (writeEpub); raw sidecar write order shifted with W20 (thunder.json lands when its fetch resolves); catalog logs may interleave with download logs; everything else is byte-identical (manifests, decoded content).",
+    "Reproducible: <code>node --test</code> (65), <code>node --expose-gc perf/bench.mjs</code>, <code>node perf/net-sim.mjs src current</code>, <code>node --expose-gc perf/zip-stream-one.mjs zip|writeZip</code>, <code>node --expose-gc perf/zip-thunk-one.mjs prepare</code>. Lane notes: perf-notes-cpu.md / perf-notes-net.md / perf-notes-ram.md / perf-notes-w16.md / perf-notes-orch.md."
   ],
   "log": [
     {
@@ -640,8 +689,12 @@
       "entry": "W16 merged: disk-backed EPUB payloads (bench 69→55 MB, bytes identical, wall equal; lane also fixed a pre-existing dcterms:modified clock flake in the byte-identity pin). Wave 3 suite 64/64."
     },
     {
-      "t": "10:48",
+      "t": "10:38",
       "entry": "W19 (compact sidecars) measured and rejected — ~1% on the large sidecar. One unreproduced suite transient observed once during reverts (5+ consecutive clean 64/64 runs since). W18+W20 orchestration lane in flight."
+    },
+    {
+      "t": "10:41",
+      "entry": "W18+W20 merged from lane: streamed EPUB digest into the manifest + catalog round trips overlapped with downloads. Wave 4 suite 65/65, e2e acceptance green."
     }
   ]
 }
