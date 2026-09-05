@@ -57,6 +57,12 @@ export async function startSimServer({ jsonDelay = 0 } = {}) {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ ok: true, path: url.pathname }));
       });
+    } else if (url.pathname === '/slow') {
+      // fixed 25 ms server think-time, for concurrency-pattern measurement
+      sleep(25).then(() => {
+        res.writeHead(200);
+        res.end('ok');
+      });
     } else if (url.pathname === '/stall') {
       /* never respond */
     } else if (url.pathname === '/redirect') {

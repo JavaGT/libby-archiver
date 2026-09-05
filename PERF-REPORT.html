@@ -54,7 +54,7 @@
   <div class="meta">base commit be863fd (main) · node v26.7.0 · Apple M4</div>
   <span class="refresh-note">⟳ this page refreshes itself every 5 min</span>
   <div class="tldr">
-    <div class="stat"><b>27×</b><span>EPUB assembly (189→7 ms)</span></div><div class="stat"><b>−26%</b><span>zip peak RAM (108→80 MB)</span></div><div class="stat"><b>3.8×</b><span>network fetch pattern</span></div><div class="stat"><b>2–7×</b><span>page-blob decode</span></div><div class="stat"><b>10 waves</b><span>9 merged · 1 measured &amp; rejected</span></div><div class="stat"><b>52</b><span>tests (was 28)</span></div>
+    <div class="stat"><b>27×</b><span>EPUB assembly (189→7 ms)</span></div><div class="stat"><b>−34%</b><span>EPUB peak RAM (108→71 MB)</span></div><div class="stat"><b>81×</b><span>hash-once manifest pass</span></div><div class="stat"><b>3.8×</b><span>network fetch pattern</span></div><div class="stat"><b>25 waves</b><span>21 merged · 4 measured &amp; rejected</span></div><div class="stat"><b>72</b><span>tests incl. e2e (was 28)</span></div>
   </div>
 </header>
 
@@ -85,7 +85,7 @@
     </div>
     <p class="change">zip() ran deflate level 9 over every entry. JPEG/PNG/GIF/webp/avif/MP3/MP4/m4a/PDF payloads compress 0% (measured ratio 1.000 at levels 6 and 9) — they are now STORED, like the mimetype entry always was.</p>
     <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>deflate 1 MB JPEG-like data, level 9</td><td class="num">14.45 ms</td><td class="num"><b class="good">0 ms</b> <span class="dim">(100% less, Infinity×)</span></td></tr><tr><td>13 MB synthetic EPUB assembly</td><td class="num">188.7 ms</td><td class="num"><b class="good">7 ms</b> <span class="dim">(96% less, 26.96×)</span></td></tr></table>
-    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>A mislabeled media file (a .jpg that is really uncompressed data) would now be carried raw — in practice scan assets are real JPEGs, and the whole EPUB came out ~0.2% SMALLER than baseline (no deflate overhead on incompressible bytes)</li><li>EPUB readers accept stored entries (spec-compliant); unzip -t clean, and now asserted in test/epub-integrity.test.mjs</li></ul>
+    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>A mislabeled media file (a .jpg that is really uncompressed data) would now be carried raw — in practice scan assets are real JPEGs, and the whole EPUB came out 0.02% smaller than baseline (2.9 KB on the 12.7 MB bench EPUB — no deflate overhead on incompressible bytes, slightly looser text at level 6)</li><li>EPUB readers accept stored entries (spec-compliant); unzip -t clean, and now asserted in test/epub-integrity.test.mjs</li></ul>
     
     <p class="dim files">src/epub.mjs</p>
   </div>
@@ -206,18 +206,187 @@
     
     <p class="dim files">test/http.test.mjs · test/epub-integrity.test.mjs · test/manifest-ref.test.mjs · test/pool.test.mjs · test/helpers/sim-server.mjs</p>
   </div>
+  <div class="card" id="W12">
+    <div class="card-head">
+      <span class="wave-id">W12</span>
+      <h3>Streaming EPUB writer (peak RAM)</h3>
+      <span class="badge good">merged</span>
+      <span class="dim area">library · RAM</span>
+    </div>
+    <p class="change">New writeZip/writeEpub stream the archive to disk entry-by-entry (atomic .part + rename) instead of materializing the whole EPUB in memory — peak moves from O(archive) to O(largest entry). zip()/buildEpub stay with byte-identical output (pinned by test); archiveReadable now writes via writeEpub; entriesFor/writeZip/writeEpub are exported from the library index.</p>
+    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>peak RSS producing 12.7 MB EPUB (writeZip vs zip)</td><td class="num">82 MB</td><td class="num"><b class="good">71 MB</b> <span class="dim">(13% less, 1.15×)</span></td></tr><tr><td>same, vs the 108 MB the campaign started from</td><td class="num">108 MB</td><td class="num"><b class="good">71 MB</b> <span class="dim">(34% less, 1.52×)</span></td></tr><tr><td>wall time for that EPUB (zip → writeZip)</td><td class="num">10 ms</td><td class="num"><b class="warn">15 ms</b> <span class="dim">(+50%)</span></td></tr></table>
+    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>Streaming is ~1.5× slower in wall time than one big memcpy — trivial in absolute terms (~15 ms) — and the RAM saving scales with archive size</li><li>Archive size is known only after the write; the write path is async</li><li>Follow-up identified, not in scope: page/asset body arrays still hold decoded content in RAM while assembling — a lazy from-disk loader (zipChunks already accepts async sources) would cut the remaining resident set</li></ul>
+    
+    <p class="dim files">src/epub.mjs · src/archive-read.mjs · src/index.mjs</p>
+  </div>
+  <div class="card" id="W13">
+    <div class="card-head">
+      <span class="wave-id">W13</span>
+      <h3>Openbook decode (descramble + literal parser)</h3>
+      <span class="badge good">merged</span>
+      <span class="dim area">library · CPU</span>
+    </div>
+    <p class="change">decodeOpenbook ran parseFloat per character (key shifts are per-position constants — precomputed once) and scanned string literals character-by-character (now copies whole runs between escapes/quotes with identical escape semantics). Runs once per archived loan, on a player page that can exceed 2 MB.</p>
+    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>decode 1.9 MB player page</td><td class="num">49.5 ms</td><td class="num"><b class="good">20.2 ms</b> <span class="dim">(59% less, 2.45×)</span></td></tr></table>
+    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>Outputs verified identical by the bench (JSON deep-equal) and the full test suite</li><li>First rewrite used sticky regexes (match-at-index only), which swallowed closing quotes — the existing single-quoted-literal test caught it immediately; fixed to global/next-occurrence semantics. Proof the regression net pays.</li></ul>
+    
+    <p class="dim files">src/openbook.mjs</p>
+  </div>
+  <div class="card" id="W14">
+    <div class="card-head">
+      <span class="wave-id">W14</span>
+      <h3>Auth/checkout path examination</h3>
+      <span class="badge bad">measured, rejected</span>
+      <span class="dim area">interface · latency</span>
+    </div>
+    <p class="change">Examined auth.mjs/sentry.mjs/checkout.mjs for wins. The auth handshake (mint chip → link card → sync code → clone → remint) is protocol-ordered and cached across runs by the session file; sentry.mjs already keeps one pooled agent; search/checkout are 1–2 calls.</p>
+    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>actionable serial work found</td><td class="num">0</td><td class="num"><b class="warn">0</b> <span class="dim">(+0%)</span></td></tr></table>
+    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>Rejected: nothing to parallelize without violating the chip protocol's ordering; per-invocation cost is already amortized by the session cache. Recorded so the surface isn't re-swept without new information.</li></ul>
+    
+    <p class="dim files"></p>
+  </div>
+  <div class="card" id="W15">
+    <div class="card-head">
+      <span class="wave-id">W15</span>
+      <h3>End-to-end archive tests against a simulated OverDrive</h3>
+      <span class="badge good">merged</span>
+      <span class="dim area">all · correctness</span>
+    </div>
+    <p class="change">New e2e suite drives the REAL orchestrators (archiveAudiobook / archiveReadable) through loan open → session handshake → openbook decode → downloads → EPUB/sidecars → integrity manifest against three local TLS hosts serving the genuine wire formats (scrambled window.eData player pages, __bif_cfc1 page bodies, CDN-style part redirects). Only the credential boundary (authenticate/sentry) is stubbed. Building it flushed out two real bugs: CookieJar and jsonRequest silently mis-connected when a host carried an explicit port (both now parse host:port), and it caught the W13 sticky-regex quote bug the day it was written. Thunder got a LIBBY_THUNDER_HOST test seam.</p>
+    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>tests</td><td class="num">52</td><td class="num"><b class="good">59</b> <span class="dim">(-13% more, 0.88×)</span></td></tr><tr><td>archive flows covered end-to-end</td><td class="num">0</td><td class="num"><b class="good">2</b> <span class="dim">(0% more, 0×)</span></td></tr></table>
+    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>One-line test seam in metadata.mjs (env-overridable Thunder host) — production default unchanged</li><li>Tests skip gracefully when openssl is unavailable</li></ul>
+    
+    <p class="dim files">test/e2e.test.mjs · test/helpers/overdrive-sim.mjs · src/openbook.mjs · src/http.mjs · src/metadata.mjs</p>
+  </div>
+  <div class="card" id="W16">
+    <div class="card-head">
+      <span class="wave-id">W16</span>
+      <h3>Disk-backed EPUB payloads (assembly RAM)</h3>
+      <span class="badge good">merged</span>
+      <span class="dim area">library · RAM</span>
+    </div>
+    <p class="change">archiveReadable retained every decoded page body and asset buffer while assembling the EPUB — the whole book resident, and duplicated, even though the pages/assets were already written to disk. Entry payloads can now be thunks (() =&gt; read-from-disk) resolved once at encode time; the orchestrator passes lazy readers instead of buffers, so assembly no longer holds the book in RAM.</p>
+    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>peak RSS producing 12.7 MB EPUB (buffer vs disk-backed entries)</td><td class="num">69 MB</td><td class="num"><b class="good">55 MB</b> <span class="dim">(20% less, 1.25×)</span></td></tr><tr><td>node process floor for reference</td><td class="num"> MB</td><td class="num"><b>48 MB</b></td></tr></table>
+    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>Resident payload memory now scales with the largest entry, not the book; the remaining 55 MB is mostly the Node floor (~48 MB)</li><li>A payload file vanishing between write and read fails the archive loudly mid-stream (ENOENT, .part cleaned) — pinned by test; wall time unchanged (≈206 ms both paths in the bench harness)</li><li>Methodology: fresh process per impl, RSS sampled at entry boundaries — one-shot RSS masks the win on macOS (freed pages are never returned)</li></ul>
+    
+    <p class="dim files">src/epub.mjs · src/archive-read.mjs · test/ram-thunk.test.mjs · perf/zip-thunk-one.mjs</p>
+  </div>
+  <div class="card" id="W17">
+    <div class="card-head">
+      <span class="wave-id">W17</span>
+      <h3>Hash-once integrity pass</h3>
+      <span class="badge good">merged</span>
+      <span class="dim area">library · CPU + speed</span>
+    </div>
+    <p class="change">downloadPart already computes each part’s sha256 while streaming, and archive.mjs was throwing it away — so writeManifest re-read the entire book to hash what had just been hashed. Part digests are now carried into writeManifest(dir, { known }), which trusts exact digests for matching files and only re-reads content nobody hashed (sidecars, cover, README).</p>
+    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>integrity pass, 50 MB archive, digests known</td><td class="num">22.8 ms</td><td class="num"><b class="good">0.28 ms</b> <span class="dim">(99% less, 81.43×)</span></td></tr></table>
+    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>Known digests are trusted, not re-verified (re-verifying would defeat the purpose); a streaming writer bug would surface as a bad manifest — the e2e suite validates every manifest line against file contents to police exactly this</li><li>Skipped (already-present) parts have no digest and are re-hashed as before — correct, since their bytes were not observed this run</li><li>Warm-cache M4 numbers; on cold caches the win is a full re-read of the book avoided</li></ul>
+    
+    <p class="dim files">src/util.mjs · src/archive.mjs · test/manifest-ref.test.mjs</p>
+  </div>
+  <div class="card" id="W19">
+    <div class="card-head">
+      <span class="wave-id">W19</span>
+      <h3>Compact raw sidecars (storage)</h3>
+      <span class="badge bad">measured, rejected</span>
+      <span class="dim area">library · storage</span>
+    </div>
+    <p class="change">Considered minifying the raw machine sidecars (openbook.json, thunder.json, passport.json, loan.json) instead of pretty-printing them. Measured on realistically-shaped records: the big one barely benefits.</p>
+    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>openbook.json at magazine scale (~1.9 MB, bulk = one description string)</td><td class="num">1801847 B</td><td class="num"><b class="good">1774855 B</b> <span class="dim">(1% less, 1.02×)</span></td></tr><tr><td>thunder.json (rich catalog record, 45% smaller but only KBs)</td><td class="num">5692 B</td><td class="num"><b class="good">3134 B</b> <span class="dim">(45% less, 1.82×)</span></td></tr></table>
+    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>Rejected: ~1% on the only large sidecar (its bulk is a whitespace-free payload string; indent only costs on structure) and KBs elsewhere — tens of KB per archive, not worth losing human-readable provenance records</li><li>Measurement kept: perf/storage-sidecars.mjs; helper reverted before merge</li></ul>
+    
+    <p class="dim files">perf/storage-sidecars.mjs</p>
+  </div>
+  <div class="card" id="W18">
+    <div class="card-head">
+      <span class="wave-id">W18</span>
+      <h3>Streamed EPUB digest (no re-read at manifest time)</h3>
+      <span class="badge good">merged</span>
+      <span class="dim area">library · CPU + speed</span>
+    </div>
+    <p class="change">writeZip hashes every byte as it streams and returns { bytes, sha256 }; archiveReadable feeds that digest into writeManifest({ known }) keyed by the EPUB basename. The largest file in a magazine archive is no longer re-read and re-hashed by the integrity pass.</p>
+    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>EPUB re-read+hash at manifest time</td><td class="num">full file</td><td class="num"><b>eliminated</b></td></tr></table>
+    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>Same trusted-digest contract as W17 — the magazine e2e re-hashes every manifest line against file contents on the real path, which is the acceptance</li><li>Digest correctness pinned: writeZip sha256 must equal a fresh re-hash of the written file</li></ul>
+    
+    <p class="dim files">src/epub.mjs · src/archive-read.mjs · test/epub-integrity.test.mjs</p>
+  </div>
+  <div class="card" id="W20">
+    <div class="card-head">
+      <span class="wave-id">W20</span>
+      <h3>Catalog round trips overlap downloads</h3>
+      <span class="badge good">merged</span>
+      <span class="dim area">interface · wall-clock</span>
+    </div>
+    <p class="change">The thunder metadata fetch + cover download ran strictly before the download loops in both orchestrators; they are now started before and awaited where first needed — ~2 serial round trips (~200–400 ms against OverDrive) come off every archived loan.</p>
+    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>serial RTTs per archived loan</td><td class="num">2</td><td class="num"><b class="good">0</b> <span class="dim">(100% less, Infinity×)</span></td></tr></table>
+    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>Only observable change: catalog log lines can interleave with download logs (message content unchanged)</li><li>Failure semantics preserved exactly: thunder null-tolerant, cover keeps its try/catch + log; both promises always awaited (no unhandled-rejection window)</li></ul>
+    
+    <p class="dim files">src/archive.mjs · src/archive-read.mjs</p>
+  </div>
+  <div class="card" id="W21">
+    <div class="card-head">
+      <span class="wave-id">W21</span>
+      <h3>Cross-loan parallel archiving (archive --all)</h3>
+      <span class="badge bad">measured, rejected</span>
+      <span class="dim area">interface · wall-clock</span>
+    </div>
+    <p class="change">Considered archiving 2 loans at a time instead of strictly sequentially. Rejected without implementation: OverDrive rate-limits aggressively (the CLI already special-cases the whoa response and exits), multi-loan parallelism multiplies request bursts per card, and the risk cannot be validated offline — the simulated hosts cannot reproduce server-side throttling.</p>
+    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>accepted</td><td class="num">0</td><td class="num"><b class="warn">0</b> <span class="dim">(+0%)</span></td></tr></table>
+    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>The safe wins (per-loan concurrency W8/W9, pooling W7, overlap W20) capture most of the wall-clock upside without touching card-level request rates</li><li>If the owner ever wants it: make the loan-level concurrency an opt-in flag, default 1, and validate against a real shelf</li></ul>
+    
+    <p class="dim files"></p>
+  </div>
+  <div class="card" id="W24">
+    <div class="card-head">
+      <span class="wave-id">W24</span>
+      <h3>Deflate option tuning (level / memLevel / strategy)</h3>
+      <span class="badge bad">measured, rejected</span>
+      <span class="dim area">library · CPU vs storage</span>
+    </div>
+    <p class="change">Grid-probed zlib options on the 1 MB XHTML corpus (levels 5–7 × memLevel 8–9 × default/filtered strategy). The adopted level-6 default sits on the knee of the curve: level 5 is 1.8× faster (8.4→4.7 ms/MB) but +12% on text-entry size (~+0.5–1% of a whole EPUB) for only ~2–3 ms absolute saving per book; level 7 buys 1.5% smaller for +46% time.</p>
+    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>level 5 / memLevel 8</td><td class="num"></td><td class="num"><b></b></td></tr></table>
+    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>Not adopted: the absolute time at stake per book is now milliseconds after W2–W4; the storage regression outweighs it</li><li>Numbers preserved in the campaign log for whoever revisits compression</li></ul>
+    
+    <p class="dim files"></p>
+  </div>
+  <div class="card" id="W22">
+    <div class="card-head">
+      <span class="wave-id">W22</span>
+      <h3>libby info: concurrent catalog round trips</h3>
+      <span class="badge good">merged</span>
+      <span class="dim area">interface · latency</span>
+    </div>
+    <p class="change">getTitle fetched the Thunder record and then the stargazer characteristics serially although they are independent — now one Promise.all round trip. Measured against sim routes with fixed 100 ms think-time each: ~114 ms total where the serial flow took ≥200 ms; a characteristics failure still degrades to [] without failing the title (pinned by test, including the dead-endpoint case).</p>
+    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>libby info round trips</td><td class="num">2</td><td class="num"><b class="good">1</b> <span class="dim">(50% less, 2×)</span></td></tr><tr><td>sim: two 100 ms catalog routes, total</td><td class="num">200 ms</td><td class="num"><b class="good">114 ms</b> <span class="dim">(43% less, 1.75×)</span></td></tr></table>
+    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>Thunder and stargazer hosts are env-overridable (LIBBY_THUNDER_HOST / LIBBY_STARGAZER_HOST) — production defaults unchanged</li><li>Real-world saving is one OverDrive RTT (~50–150 ms) per libby info</li></ul>
+    
+    <p class="dim files">src/discover.mjs · test/discover-parallel.test.mjs · test/helpers/overdrive-sim.mjs</p>
+  </div>
+  <div class="card" id="W23">
+    <div class="card-head">
+      <span class="wave-id">W23</span>
+      <h3>Loop implementation showdown (cfc1, descramble)</h3>
+      <span class="badge good">merged</span>
+      <span class="dim area">library · CPU</span>
+    </div>
+    <p class="change">Alternative implementations raced against the surviving hand-rolled loops, winners adopted behind a cheap pure-ASCII gate (Buffer.byteLength(s,utf8)===s.length): cfc1 swaps bytes in a latin1 buffer with an indexOf pre-scan (1.6× on a 2.8 MB blob); descramble shifts latin1 bytes in place (4.3–6.5× across key shapes) with a u16/fromCharCode-stride general fallback. Any code unit &gt;127 — including U+2028/29 and surrogates — routes to the exact previous implementations, pinned by tests.</p>
+    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>cfc1, 2.8 MB blob</td><td class="num">28.6 ms</td><td class="num"><b class="good">17.9 ms</b> <span class="dim">(37% less, 1.6×)</span></td></tr><tr><td>descramble, 2 MB (3 key shapes)</td><td class="num">21.5–24 ms</td><td class="num"><b>3.4–6.5 ms</b></td></tr></table>
+    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>Byte paths only engage for pure-ASCII input (all base64 blobs and scrambled output); equivalence pinned by the existing regex-sweep tests plus new ASCII-gate tests</li><li>Tried and not adopted: u16 tight loop for cfc1 (1.04×), JS base64 decoder from bytes (1.27× — native string base64 wins), run-slice pass-through for descramble (0.61× regression on dense keys)</li><li>Same-process interleaved medians, outputs verified identical on every run</li></ul>
+    
+    <p class="dim files">src/read.mjs · src/openbook.mjs · test/read.test.mjs · test/openbook.test.mjs · perf/loop-showdown.mjs</p>
+  </div>
 
 <h2>Baseline measurements (code at be863fd (main))</h2>
 <p class="dim">From <code>perf/results-baseline.json</code> — Apple M4, numbers are medians. A same-code rerun agrees within noise.</p>
 <table><tr><td>crc32_4mb (JS vs native zlib)</td><td class="num">7.77</td><td class="num">0.11</td></tr><tr><td>zip_assembly (13 MB synthetic EPUB)</td><td class="num">188.74</td><td class="num">108</td><td class="num">12.7</td></tr><tr><td>deflate_1mb_text</td><td class="num">12.02</td><td class="num">5.68</td><td class="num">0.09</td><td class="num">0.09</td></tr><tr><td>deflate_1mb_jpegish</td><td class="num">14.45</td><td class="num">14.44</td><td class="num">1</td></tr><tr><td>cfc1_decode_2_8mb_blob</td><td class="num">65</td></tr><tr><td>manifest_hash_50mb</td><td class="num">23.98</td></tr><tr><td>cli_startup_help</td><td class="num">36.4</td><td class="num">27.3</td></tr><tr><td>net_reuse_30_gets_loopback</td><td class="num">82</td><td class="num">30</td></tr><tr><td>net_concurrency_120req_25ms</td><td class="num">3202</td></tr></table>
 
 <h2>How to adopt</h2>
-<p>Everything lives on branch <code>perf-trial-20260906-030748</code> (hub), merged from lane branches <code>-cpu</code> and <code>-net</code>; each wave is an independent commit so any piece can be adopted or dropped alone. <code>main</code> is untouched.</p><p>To adopt everything: <code>git merge perf-trial-20260906-030748</code> from main (fast-forward). package.json engines is now <code>&gt;=20.15</code> (zlib.crc32).</p><p>Behavioral deltas to be aware of: EPUB bytes differ from baseline by design (stored media, level-6 text) but remain spec-valid and ~0.2% smaller; page/asset log lines now report completions rather than starts; anything else is byte-identical (manifests, decoded content).</p><p>Reproducible: <code>node --test</code> (52), <code>node --expose-gc perf/bench.mjs</code>, <code>node perf/net-sim.mjs src current</code>. Lane notes: perf-notes-cpu.md / perf-notes-net.md in the respective worktrees.</p>
+<p>Everything from all waves lives on branch <code>perf-trial-20260906-104548</code> (linear history: waves W1–W25). Each wave is an independent commit; <code>main</code> is untouched.</p><p>To adopt everything: <code>git merge perf-trial-20260906-104548</code> from main (fast-forward). package.json engines is <code>&gt;=20.15</code> (zlib.crc32).</p><p>Behavioral deltas: EPUB bytes differ from baseline by design (stored media, level-6 text) but stay spec-valid and 0.02% smaller (2.9 KB on 12.7 MB); the EPUB write path is async (writeEpub); raw sidecar write order shifted with W20; catalog logs may interleave with download logs; libby info now issues its two catalog calls concurrently; everything else is byte-identical (manifests, decoded content).</p><p>Reproducible: <code>node --test</code> (72), <code>node --expose-gc perf/bench.mjs</code>, <code>node perf/net-sim.mjs src current</code>, <code>node --expose-gc perf/zip-stream-one.mjs zip|writeZip</code>, <code>node --expose-gc perf/zip-thunk-one.mjs prepare</code>, <code>node perf/loop-showdown.mjs</code>. Lane notes: perf-notes-{cpu,net,ram,w16,orch,loops}.md.</p>
 
 <h2>Campaign log</h2>
-<table><tr><td class="dim">03:48</td><td>Network patterns measured against local latency server: reuse 30 conns → ≤1 (82→41 ms loopback), concurrency 3.84× (3202→834 ms). Report finalized.</td></tr><tr><td class="dim">03:44</td><td>Regression + tradeoff test wave (W11): suite 28 → 52, all green. Local-TLS fixture server added (test/helpers/sim-server.mjs).</td></tr><tr><td class="dim">03:31</td><td>CPU lane complete (receipt: zip 189→5 ms fresh-process, cfc1 60→8.6 ms, manifest identical). Both lanes merged into hub; engines bumped to &gt;=20.15; 39/39 tests green; merged bench: zip 27×, RSS −26%, EPUB 0.2% smaller.</td></tr><tr><td class="dim">03:25</td><td>Subagent limit reduced to 1: net lane taken over by coordinator after its first 2 commits; mapLimit fail-fast bug found in review and fixed with a proper pinning test.</td></tr><tr><td class="dim">03:14</td><td>Baseline measured. W10 (CLI lazy loading) measured and rejected — ~9 ms ceiling. Lanes dispatched: CPU (W1–W6) and network (W7–W9).</td></tr><tr><td class="dim">03:12</td><td>Bench harness written (perf/bench.mjs, zip-one.mjs, gen.mjs); baseline snapshot captured; suite green at base (28 tests).</td></tr><tr><td class="dim">03:07</td><td>Trial opened: worktrees + branches perf-trial-20260906-030748{,-cpu,-net} created from be863fd.</td></tr></table>
+<table><tr><td class="dim">11:06</td><td>W23 merged: cfc1 1.6×, descramble 4.3–6.5× (latin1 byte paths behind an ASCII gate). Wave 5 suite 72/72. Adoption branch is now perf-trial-20260906-104548 (contains waves 1–5).</td></tr><tr><td class="dim">11:08</td><td>Wave 5 in flight: W22 (getTitle parallel round trips, 69/69 in hub) + W23 loop-implementation showdown (subagent). Deflate option grid probed — level 6 confirmed on the knee of the curve (W24 rejected).</td></tr><tr><td class="dim">10:46</td><td>Closing soak: 10 consecutive full-suite runs, 0 failures (plus the earlier unreproduced transient — 15+ clean runs total since). W21 (cross-loan parallelism) considered and rejected: OverDrive rate-limit risk, not validable offline. Campaign closed at 10:46, ahead of the 12:00 stop.</td></tr><tr><td class="dim">10:41</td><td>W18+W20 merged from lane: streamed EPUB digest into the manifest + catalog round trips overlapped with downloads. Wave 4 suite 65/65, e2e acceptance green.</td></tr><tr><td class="dim">10:38</td><td>W19 (compact sidecars) measured and rejected — ~1% on the large sidecar. One unreproduced suite transient observed once during reverts (5+ consecutive clean 64/64 runs since). W18+W20 orchestration lane in flight.</td></tr><tr><td class="dim">10:02</td><td>W16 merged: disk-backed EPUB payloads (bench 69→55 MB, bytes identical, wall equal; lane also fixed a pre-existing dcterms:modified clock flake in the byte-identity pin). Wave 3 suite 64/64.</td></tr><tr><td class="dim">09:52</td><td>Wave 3 opened (perf-trial-20260906-093914, stop 11:00): W17 hash-once manifest merged (22.8→0.28 ms, 60/60 tests, audiobook e2e now validates the trusted-digest path). W16 disk-backed EPUB payloads in flight (1 subagent).</td></tr><tr><td class="dim">09:20</td><td>Wave 2 closed: 3 merged (W12, W13, W15), 1 rejected (W14). Everything lives on perf-trial-20260906-083640 (contains wave 1 + wave 2, linear history).</td></tr><tr><td class="dim">09:05</td><td>W12 landed from lane: writeZip/writeEpub streaming writer (byte-identical output, RSS 82→71 MB on the synthetic book), merged to wave-2 hub; e2e suite (W15) green through the streaming path — 59/59.</td></tr><tr><td class="dim">08:36</td><td>Wave 2 opened (goal re-issued): worktrees perf-trial-20260906-083640{,-ram} branched from wave-1 tip (03d0921). W13 openbook decode merged (49.5→20.2 ms, 2.5×, outputs identical). W14 auth/checkout examined, rejected (protocol-ordered + session-cached). W12 streaming EPUB writer in progress (subagent).</td></tr><tr><td class="dim">03:48</td><td>Network patterns measured against local latency server: reuse 30 conns → ≤1 (82→41 ms loopback), concurrency 3.84× (3202→834 ms). Report finalized.</td></tr><tr><td class="dim">03:44</td><td>Regression + tradeoff test wave (W11): suite 28 → 52, all green. Local-TLS fixture server added (test/helpers/sim-server.mjs).</td></tr><tr><td class="dim">03:31</td><td>CPU lane complete (receipt: zip 189→5 ms fresh-process, cfc1 60→8.6 ms, manifest identical). Both lanes merged into hub; engines bumped to &gt;=20.15; 39/39 tests green; merged bench: zip 27×, RSS −26%, EPUB 0.02% smaller (12,685,676 → 12,682,772 B).</td></tr><tr><td class="dim">03:25</td><td>Subagent limit reduced to 1: net lane taken over by coordinator after its first 2 commits; mapLimit fail-fast bug found in review and fixed with a proper pinning test.</td></tr><tr><td class="dim">03:14</td><td>Baseline measured. W10 (CLI lazy loading) measured and rejected — ~9 ms ceiling. Lanes dispatched: CPU (W1–W6) and network (W7–W9).</td></tr><tr><td class="dim">03:12</td><td>Bench harness written (perf/bench.mjs, zip-one.mjs, gen.mjs); baseline snapshot captured; suite green at base (28 tests).</td></tr><tr><td class="dim">03:07</td><td>Trial opened: worktrees + branches perf-trial-20260906-030748{,-cpu,-net} created from be863fd.</td></tr></table>
 
-<footer>Auto-generated by <code>perf/render.mjs</code> from <code>perf/report-data.json</code> · trial branches <code>perf-trial-20260906-030748*</code> · report last rendered 2026-09-06 03:48</footer>
+<footer>Auto-generated by <code>perf/render.mjs</code> from <code>perf/report-data.json</code> · trial branches <code>perf-trial-20260906-030748*</code> · report last rendered 2026-09-06 11:16</footer>
 </main>
 </body>
 </html>
