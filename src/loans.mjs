@@ -20,7 +20,9 @@ export function readableLoans(loans) {
   return loans.filter((l) => l.type === 'ebook' || l.type === 'magazine');
 }
 
-function normalizeLoan(loan) {
+/** Keep the loan's real type — unknown types stay unknown so they are never
+ *  silently routed into the wrong archiver. */
+export function normalizeLoan(loan) {
   const cover =
     loan.covers?.cover510Wide?.href ||
     loan.covers?.cover300Wide?.href ||
@@ -32,7 +34,7 @@ function normalizeLoan(loan) {
     title: loan.title,
     subtitle: loan.subtitle,
     author: loan.firstCreatorName,
-    type: loan.type?.id ?? 'ebook',
+    type: loan.type?.id ?? 'unknown',
     format: loan.overDriveFormat?.id ?? loan.type?.id ?? '',
     expires: loan.expires,
     coverUrl: cover,

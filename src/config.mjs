@@ -10,6 +10,8 @@ import os from 'node:os';
 import path from 'node:path';
 import https from 'node:https';
 import { READ_HOST } from './sentry.mjs';
+import { getJson } from './http.mjs';
+import { writeFileAtomic } from './util.mjs';
 
 const APP = 'libby-archiver';
 
@@ -58,8 +60,7 @@ export function saveConfig(cfg) {
   const dir = configDir();
   fs.mkdirSync(dir, { recursive: true });
   const file = configPath();
-  fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + '\n');
-  fs.chmodSync(file, 0o600);
+  writeFileAtomic(file, JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 });
   return file;
 }
 
@@ -69,49 +70,30 @@ export function saveConfig(cfg) {
  * Uses OverDrive's public Thunder catalog — no auth required.
  * @returns {Promise<{key:string,name:string,websiteId:string}>}
  */
-export function resolveLibrary(key, { insecureTLS = false } = {}) {
+export async function resolveLibrary(key, { insecureTLS = false } = {}) {
   const clean = String(key).trim().toLowerCase();
-  const agent = new https.Agent({ rejectUnauthorized: !insecureTLS });
-  return new Promise((resolve, reject) => {
-    https
-      .get(
-        {
-          host: 'thunder.api.overdrive.com',
-          path: `/v2/libraries/${encodeURIComponent(clean)}`,
-          agent,
-          headers: { Accept: 'application/json' },
-        },
-        (res) => {
-          const chunks = [];
-          res.on('data', (c) => chunks.push(c));
-          res.on('end', () => {
-            if (res.statusCode === 404) {
-              return reject(
-                new Error(
-                  `No library found for key "${clean}". Use the slug from your ` +
-                    `libbyapp.com library URL (e.g. "your-library").`,
-                ),
-              );
-            }
-            let j;
-            try {
-              j = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-            } catch {
-              return reject(new Error(`Unexpected response resolving "${clean}".`));
-            }
-            if (!j?.websiteId) {
-              return reject(new Error(`Library "${clean}" has no websiteId in the catalog.`));
-            }
-            resolve({
-              key: j.preferredKey || clean,
-              name: j.name || clean,
-              websiteId: String(j.websiteId),
-            });
-          });
-        },
-      )
-      .on('error', reject);
-  });
+  const res = await getJson(
+    'thunder.api.overdrive.com',
+    `/v2/libraries/${encodeURIComponent(clean)}`,
+    { insecureTLS, timeoutMs: 10_000 },
+  );
+  if (res.status === 404) {
+    throw new Error(
+      `No library found for key "${clean}". Use the slug from your ` +
+        `libbyapp.com library URL (e.g. "your-library").`,
+    );
+  }
+  if (res.status !== 200) {
+    throw new Error(`Library lookup for "${clean}" failed: HTTP ${res.status}.`);
+  }
+  if (!res.json?.websiteId) {
+    throw new Error(`Library "${clean}" has no websiteId in the catalog.`);
+  }
+  return {
+    key: res.json.preferredKey || clean,
+    name: res.json.name || clean,
+    websiteId: String(res.json.websiteId),
+  };
 }
 
 /**

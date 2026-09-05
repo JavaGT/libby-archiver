@@ -9,25 +9,31 @@
 // on-demand check (copies, holds, and estimated wait). `getTitle` is the "inspect before
 // you borrow" detail view.
 
-import https from 'node:https';
+import { getJson, postJson } from './http.mjs';
+import { cleanHtml, extractIsbns } from './util.mjs';
 
 const THUNDER = 'thunder.api.overdrive.com';
 const STARGAZER = 'stargazer-cache.libbyapp.com';
+const AVAILABILITY_CHUNK = 100; // Thunder caps ids per availability request
 
 /**
- * Real-time availability for one or more titles.
+ * Real-time availability for one or more titles (chunked over the wire).
  * @param {string} library   library key
  * @param {string|string[]} ids
  * @returns {Promise<Availability[]>} one entry per id (order not guaranteed; match on `id`)
  */
 export async function getAvailability(library, ids, { insecureTLS = false } = {}) {
   const list = (Array.isArray(ids) ? ids : [ids]).map(String);
-  if (!list.length) return [];
   const path = `/v2/libraries/${encodeURIComponent(library)}/media/availability?x-client-id=dewey`;
-  const res = await postJson(THUNDER, path, { ids: list }, insecureTLS);
-  if (res.status !== 200) throw new Error(`availability failed: HTTP ${res.status}`);
-  const items = res.json?.items ?? (Array.isArray(res.json) ? res.json : []);
-  return items.map(normalizeAvailability);
+  const rows = [];
+  for (let i = 0; i < list.length; i += AVAILABILITY_CHUNK) {
+    const chunk = list.slice(i, i + AVAILABILITY_CHUNK);
+    const res = await postJson(THUNDER, path, { ids: chunk }, { insecureTLS });
+    if (res.status !== 200) throw new Error(`availability failed: HTTP ${res.status}`);
+    const items = res.json?.items ?? (Array.isArray(res.json) ? res.json : []);
+    rows.push(...items.map(normalizeAvailability));
+  }
+  return rows;
 }
 
 /** @typedef {{id:string,available:boolean,availableCopies:number,ownedCopies:number,luckyDayAvailableCopies:number,holds:number,holdsRatio:number,estimatedWaitDays:number,isHoldable:boolean,isFastlane:boolean,availabilityType:string}} Availability */
@@ -54,7 +60,7 @@ function normalizeAvailability(a) {
  */
 export async function getTitle(library, id, { insecureTLS = false, characteristics = true } = {}) {
   const path = `/v2/libraries/${encodeURIComponent(library)}/media/${encodeURIComponent(id)}?x-client-id=dewey`;
-  const res = await getJson(THUNDER, path, insecureTLS);
+  const res = await getJson(THUNDER, path, { insecureTLS });
   if (res.status !== 200) throw new Error(`title lookup failed: HTTP ${res.status}`);
   const detail = normalizeTitle(res.json);
   if (characteristics) {
@@ -70,7 +76,7 @@ export async function getTitle(library, id, { insecureTLS = false, characteristi
 /** Flatten the emoji-keyed characteristics tree into a list of descriptive tags. */
 export async function getCharacteristics(library, id, { insecureTLS = false } = {}) {
   const path = `/${encodeURIComponent(library)}/characteristics/title/${encodeURIComponent(id)}`;
-  const res = await getJson(STARGAZER, path, insecureTLS);
+  const res = await getJson(STARGAZER, path, { insecureTLS });
   if (res.status !== 200) return [];
   const tags = new Set();
   const walk = (node) => {
@@ -115,79 +121,4 @@ function normalizeTitle(m) {
     },
     raw: m,
   };
-}
-
-function extractIsbns(formats = []) {
-  const out = [];
-  for (const f of formats) for (const id of f.identifiers ?? []) {
-    if (/ISBN/i.test(id.type ?? '')) out.push(id.value);
-  }
-  return [...new Set(out)];
-}
-
-function cleanHtml(desc) {
-  const raw = typeof desc === 'string' ? desc : desc?.full ?? desc?.short;
-  if (!raw) return undefined;
-  return raw
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
-    .replace(/&apos;/g, "'")
-    .replace(/&quot;/g, '"')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .trim();
-}
-
-// ---- tiny JSON HTTP helpers (self-contained, mirrors search.mjs) ----------------
-
-function getJson(host, path, insecureTLS) {
-  const agent = new https.Agent({ rejectUnauthorized: !insecureTLS });
-  return new Promise((resolve, reject) => {
-    https
-      .get({ host, path, agent, headers: { Accept: 'application/json' } }, (res) => collect(res, resolve))
-      .on('error', reject);
-  });
-}
-
-function postJson(host, path, body, insecureTLS) {
-  const data = JSON.stringify(body);
-  const agent = new https.Agent({ rejectUnauthorized: !insecureTLS });
-  return new Promise((resolve, reject) => {
-    const req = https.request(
-      {
-        host,
-        path,
-        method: 'POST',
-        agent,
-        headers: {
-          Accept: 'application/json',
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(data),
-          Origin: 'https://libbyapp.com',
-        },
-      },
-      (res) => collect(res, resolve),
-    );
-    req.on('error', reject);
-    req.write(data);
-    req.end();
-  });
-}
-
-function collect(res, resolve) {
-  const chunks = [];
-  res.on('data', (c) => chunks.push(c));
-  res.on('end', () => {
-    const text = Buffer.concat(chunks).toString('utf8');
-    let json;
-    try {
-      json = JSON.parse(text);
-    } catch {
-      json = undefined;
-    }
-    resolve({ status: res.statusCode, json, text });
-  });
 }

@@ -21,8 +21,18 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { SentryClient, decodeJwt, CLIENT_VERSION, READ_HOST } from './sentry.mjs';
+import { writeFileAtomic } from './util.mjs';
 
 const mintQuery = () => `c=d%3A${CLIENT_VERSION}&s=0`;
+
+/**
+ * Sessions are cached per (library, card number) — a cached token must never be
+ * reused for a different card, or `--card`/`--library` overrides would silently
+ * operate someone else's account.
+ */
+export function sessionKey(cfg) {
+  return `${String(cfg.library ?? '').toLowerCase()}|${String(cfg.cardNumber ?? '')}`;
+}
 
 /**
  * @param {object} cfg
@@ -38,13 +48,19 @@ export async function authenticate(cfg) {
   const log = cfg.log ?? (() => {});
   const client = new SentryClient({ host: READ_HOST, insecureTLS: cfg.insecureTLS });
 
-  // 1. Reuse a cached session if its token is still valid.
+  // 1. Reuse a cached session if it belongs to this card/library and is still valid.
   const cached = loadSession(cfg.sessionFile);
-  if (cached && !isExpired(cached.identity)) {
-    log('Reusing cached session.');
-    const ok = await verify(client, cached.identity);
-    if (ok) return { client, identity: cached.identity, cardId: cached.cardId };
-    log('Cached session no longer valid; re-bootstrapping.');
+  if (cached && cached.identity && !isExpired(cached.identity)) {
+    if (!cached.key) {
+      log('Cached session predates per-card keying; re-bootstrapping.');
+    } else if (cached.key !== sessionKey(cfg)) {
+      log('Cached session belongs to a different card/library; re-bootstrapping.');
+    } else {
+      log('Reusing cached session.');
+      const ok = await verify(client, cached.identity);
+      if (ok) return { client, identity: cached.identity, cardId: cached.cardId };
+      log('Cached session no longer valid; re-bootstrapping.');
+    }
   }
 
   // 2. Bootstrap a fresh, open-capable identity from the card number alone.
@@ -70,7 +86,12 @@ export async function authenticate(cfg) {
   const cardId = cards[0][1]; // [puid, cardId, ?, isSessionUser, websiteId, library]
   log(`Authenticated. cardId=${cardId} prbn=${claims?.chip?.prbn} cards=${cards.length}`);
 
-  saveSession(cfg.sessionFile, { identity, cardId, savedAt: Date.now() });
+  saveSession(cfg.sessionFile, {
+    identity,
+    cardId,
+    key: sessionKey(cfg),
+    savedAt: Date.now(),
+  });
   return { client, identity, cardId };
 }
 
@@ -153,6 +174,5 @@ function loadSession(file) {
 function saveSession(file, data) {
   if (!file) return;
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(data, null, 2));
-  fs.chmodSync(file, 0o600); // token is a credential
+  writeFileAtomic(file, JSON.stringify(data, null, 2), { mode: 0o600 }); // token is a credential
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// libby — browser-free CLI for your Libby / OverDrive audiobooks.
+// libby — browser-free CLI for your Libby / OverDrive loans.
 //
 //   libby init                     interactive setup (run this first)
 //   libby search <terms>           search the catalog
@@ -25,6 +25,7 @@
 //   --insecure-tls  disable TLS verification (for the mismatched-cert edge)
 
 import process from 'node:process';
+import readline from 'node:readline';
 import { authenticate } from '../src/auth.mjs';
 import { sync, audiobookLoans, readableLoans } from '../src/loans.mjs';
 import { archiveAudiobook } from '../src/archive.mjs';
@@ -44,9 +45,9 @@ Usage:
   libby info <id>                full catalog detail for a title
   libby avail <id...>            real-time availability (copies, holds, wait)
   libby borrow <id>              check out a title (id from search)
-  libby return <id>              return a loan early
+  libby return <id>              return a loan early (asks for confirmation)
   libby hold <id>                place a hold on an unavailable title
-  libby unhold <id>              cancel a hold
+  libby unhold <id>              cancel a hold (asks for confirmation)
   libby list                     list your current loans (audiobook, ebook, magazine)
   libby archive --all            archive every loan (audiobooks, ebooks, magazines)
   libby archive --title <id>     archive a single title by id
@@ -57,8 +58,12 @@ Usage:
 Search/borrow/archive options:
   --format <audiobook|ebook|magazine|all>   filter format (search/borrow/list/archive)
   --available                               search: only titles available now
+  --page <n>                                search: result page (20 per page)
   --lucky-day                               borrow: take a Lucky Day copy if offered
   --period <days>                           borrow: lending period (default: preferred)
+  --yes                                     return/unhold: skip the confirmation
+
+borrow detects the title's format automatically; --format only overrides it.
 
 Audiobooks download as raw MP3 spine parts; ebooks and magazines assemble into an EPUB
 (fixed-layout for magazines) alongside the decoded pages and plaintext assets.
@@ -69,9 +74,14 @@ Config options (override saved config):
 
 First time? Run  libby init`;
 
+const COMMANDS = new Set([
+  'init', 'search', 'info', 'avail', 'borrow', 'return', 'hold', 'unhold',
+  'list', 'archive', 'auth', 'where', 'help',
+]);
+
 function parseArgs(argv) {
   const args = { _: [] };
-  const flags = new Set(['insecure-tls', 'all', 'available', 'lucky-day']);
+  const flags = new Set(['insecure-tls', 'all', 'available', 'lucky-day', 'yes']);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith('--') && flags.has(a.slice(2))) {
@@ -97,6 +107,25 @@ function wrap(text, width = 78, indent = '') {
     out.push(indent + line);
   }
   return out.join('\n');
+}
+
+/** Ask a y/N question on the terminal. Non-interactive runs must pass --yes. */
+async function confirm(question, { yes } = {}) {
+  if (yes) return true;
+  if (!process.stdin.isTTY) {
+    console.error('Not a terminal — re-run with --yes to proceed without confirmation.');
+    return false;
+  }
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const a = await new Promise((resolve) => {
+      rl.question(`${question} [y/N] `, resolve);
+      rl.on('close', () => resolve(''));
+    });
+    return /^\s*y(es)?\s*$/i.test(a);
+  } finally {
+    rl.close();
+  }
 }
 
 /** Resolve just the library key (for auth-free commands like search). */
@@ -146,28 +175,45 @@ async function main() {
     console.log(`session: ${sessionPath()}`);
     return;
   }
+  // Gate unknown commands BEFORE any network activity — a typo must never mint
+  // chips or authenticate against OverDrive.
+  if (!COMMANDS.has(command)) {
+    console.error(`Unknown command: ${command}\n`);
+    console.log(HELP);
+    process.exit(2);
+  }
 
   // search needs no card / auth — just the library key.
   if (command === 'search') {
     const terms = args._.slice(1).join(' ').trim();
     if (!terms) {
-      console.error('Usage: libby search <terms>  [--format audiobook|ebook|all] [--available]');
+      console.error('Usage: libby search <terms>  [--format audiobook|ebook|magazine|all] [--available] [--page <n>]');
+      process.exit(2);
+    }
+    const page = args.page ? Number(args.page) : 1;
+    if (!Number.isInteger(page) || page < 1) {
+      console.error('--page must be a positive whole number.');
       process.exit(2);
     }
     const { library, insecureTLS } = resolveLibraryKey(args);
     const { total, items } = await searchCatalog(library, terms, {
-      format: args.format ?? 'audiobook',
+      format: args.format ?? 'all',
       availableOnly: !!args.available,
+      page,
       insecureTLS,
     });
     if (!items.length) return console.log(`No results for "${terms}".`);
-    console.log(`${items.length} of ${total} result(s) for "${terms}":\n`);
+    const pages = Math.max(1, Math.ceil(total / items.length));
+    console.log(`Page ${page} of ~${pages} — ${items.length} of ${total} result(s) for "${terms}":\n`);
     for (const it of items) {
       const avail = it.available
         ? 'available now'
         : `${it.holds} hold(s)` + (it.ownedCopies ? ` on ${it.ownedCopies} cop(y/ies)` : '');
       console.log(`  ${it.id}  ${it.title}${it.author ? ` — ${it.author}` : ''}`);
       console.log(`        ${it.type}${it.year ? `, ${it.year}` : ''} · ${avail}`);
+    }
+    if (total > items.length * page) {
+      console.log(`\nMore results:  libby search "${terms}" --page ${page + 1}`);
     }
     console.log(`\nBorrow one with:  libby borrow <id>`);
     return;
@@ -241,23 +287,55 @@ async function main() {
     }
     try {
       if (command === 'borrow') {
+        let period;
+        if (args.period) {
+          period = Number(args.period);
+          if (!Number.isInteger(period) || period <= 0) {
+            console.error('--period must be a positive whole number of days.');
+            process.exit(2);
+          }
+        }
+        // Detect the title's format from the catalog so an ebook is never borrowed
+        // with an audiobook title_format; --format only overrides.
+        let titleFormat = args.format && args.format !== 'all' ? args.format : undefined;
+        if (!titleFormat) {
+          const { library, insecureTLS } = resolveLibraryKey(args);
+          try {
+            titleFormat = (await getTitle(library, String(titleId), { insecureTLS, characteristics: false })).type;
+          } catch (e) {
+            console.error(`Could not look up the title's format (${e.message}).`);
+            console.error('Pass --format <audiobook|ebook|magazine> explicitly.');
+            process.exit(1);
+          }
+        }
         const loan = await borrowTitle(client, identity, cardId, String(titleId), {
-          titleFormat: args.format ?? 'audiobook',
+          titleFormat,
           luckyDay: !!args.luckyday,
-          period: args.period ? Number(args.period) : undefined,
-          units: args.period ? 'days' : undefined,
+          period,
+          units: period ? 'days' : undefined,
         });
         console.log(`Borrowed: ${loan.title}${loan.firstCreatorName ? ` — ${loan.firstCreatorName}` : ''}`);
         console.log(`  due ${loan.expireDate ?? loan.expires ?? '?'}  (checkoutId ${loan.checkoutId})`);
         console.log(`\nArchive it with:  libby archive --title ${titleId}`);
       } else if (command === 'return') {
+        // Show what's about to be returned — a typo'd id must not silently return a loan.
+        const { loans } = await sync(client, identity);
+        const loan = loans.find((l) => l.id === String(titleId));
+        if (!loan) {
+          console.error(`No loan with id ${titleId} on your shelf; nothing to return.`);
+          process.exit(1);
+        }
+        const ok = await confirm(`Return "${loan.title}" (due ${loan.expires ?? '?'})?`, args);
+        if (!ok) return console.log('Aborted.');
         await returnTitle(client, identity, cardId, String(titleId));
-        console.log(`Returned title ${titleId}.`);
+        console.log(`Returned: ${loan.title}`);
       } else if (command === 'hold') {
         const hold = await placeHold(client, identity, cardId, String(titleId));
         const pos = hold?.holdListPosition;
         console.log(`Hold placed on title ${titleId}${pos ? ` (position ${pos})` : ''}.`);
       } else {
+        const ok = await confirm(`Cancel hold on title ${titleId}?`, args);
+        if (!ok) return console.log('Aborted.');
         await cancelHold(client, identity, cardId, String(titleId));
         console.log(`Hold cancelled on title ${titleId}.`);
       }
@@ -319,10 +397,6 @@ async function main() {
     console.log(`\nArchived ${done.length}/${targets.length} title(s) to ${cfg.out}`);
     return;
   }
-
-  console.error(`Unknown command: ${command}\n`);
-  console.log(HELP);
-  process.exit(2);
 }
 
 main().catch((e) => {

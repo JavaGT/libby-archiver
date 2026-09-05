@@ -5,8 +5,7 @@
 // loan record holds.
 
 import fs from 'node:fs';
-import https from 'node:https';
-import { pipeline } from 'node:stream/promises';
+import { fetchBuffer, getJson } from './http.mjs';
 
 const THUNDER = 'thunder.api.overdrive.com';
 
@@ -16,7 +15,7 @@ export async function fetchThunderMedia(library, titleId, { insecureTLS = false 
     titleId,
   )}?x-client-id=dewey`;
   try {
-    const res = await getJson(THUNDER, path, insecureTLS);
+    const res = await getJson(THUNDER, path, { insecureTLS });
     return res.status === 200 ? res.json : null;
   } catch {
     return null;
@@ -53,38 +52,17 @@ function stripResize(url) {
   return url;
 }
 
+/** Download cover art to destPath atomically (temp file + rename). */
 export async function downloadCover(url, destPath, { insecureTLS = false } = {}) {
-  const u = new URL(url);
-  const agent = new https.Agent({ rejectUnauthorized: !insecureTLS });
-  const res = await new Promise((resolve, reject) => {
-    https.get(u, { agent, headers: { Accept: 'image/*' } }, resolve).on('error', reject);
-  });
-  if (res.statusCode !== 200) {
-    res.resume();
-    throw new Error(`cover ${url} -> HTTP ${res.statusCode}`);
+  const res = await fetchBuffer(url, { insecureTLS, headers: { Accept: 'image/*' } });
+  if (res.status !== 200) throw new Error(`cover ${url} -> HTTP ${res.status}`);
+  const tmp = destPath + '.part';
+  try {
+    fs.writeFileSync(tmp, res.body);
+    fs.renameSync(tmp, destPath);
+  } catch (e) {
+    fs.rmSync(tmp, { force: true });
+    throw e;
   }
-  await pipeline(res, fs.createWriteStream(destPath));
   return destPath;
-}
-
-function getJson(host, path, insecureTLS) {
-  const agent = new https.Agent({ rejectUnauthorized: !insecureTLS });
-  return new Promise((resolve, reject) => {
-    https
-      .get({ host, path, agent, headers: { Accept: 'application/json' } }, (res) => {
-        const chunks = [];
-        res.on('data', (c) => chunks.push(c));
-        res.on('end', () => {
-          const text = Buffer.concat(chunks).toString('utf8');
-          let json;
-          try {
-            json = JSON.parse(text);
-          } catch {
-            json = undefined;
-          }
-          resolve({ status: res.statusCode, json, text });
-        });
-      })
-      .on('error', reject);
-  });
 }

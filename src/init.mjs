@@ -3,39 +3,59 @@
 // Walks a new user from nothing to a working setup in under a minute:
 //   1. auto-detect the TLS quirk on this network
 //   2. resolve their library (key -> name + websiteId) against the public catalog
-//   3. collect the card number (+ optional PIN)
+//   3. collect the card number (+ optional PIN, entered without echo)
 //   4. verify it actually authenticates
 //   5. save config to ~/.config/libby-archiver/config.json
 //
 // After this, `libby list` and `libby archive` just work.
 
 import readline from 'node:readline';
-import { resolveLibrary, detectInsecureTLS, saveConfig, configPath, loadConfig } from './config.mjs';
+import { Writable } from 'node:stream';
+import { resolveLibrary, detectInsecureTLS, saveConfig, loadConfig, sessionPath } from './config.mjs';
 import { authenticate } from './auth.mjs';
-import { sessionPath } from './config.mjs';
 
-function ask(rl, question, { def } = {}) {
-  const suffix = def ? ` [${def}]` : '';
+// One readline per question, so a muted-output interface (secrets) is the only stdin
+// listener while it waits. A blank answer falls back to `def` without displaying it —
+// that's how an existing PIN is kept without echoing it to the screen.
+function prompt(question, { def = '', muted = false } = {}) {
   return new Promise((resolve) => {
-    rl.question(`${question}${suffix}: `, (a) => resolve((a || '').trim() || def || ''));
+    const suffix = def ? ` [${def}]` : '';
+    if (muted) process.stdout.write(`${question}: `);
+    const out = muted
+      ? new Writable({ write(_chunk, _enc, cb) { cb(); } })
+      : process.stdout;
+    const rl = readline.createInterface({ input: process.stdin, output: out, terminal: true });
+    let settled = false;
+    const settle = (a) => {
+      if (settled) return;
+      settled = true;
+      rl.close();
+      if (muted) process.stdout.write('\n');
+      resolve(String(a ?? '').trim() || def || '');
+    };
+    rl.question(muted ? '' : `${question}${suffix}: `, settle);
+    rl.on('close', () => settle(''));
   });
 }
 
-const c = {
-  b: (s) => `\x1b[1m${s}\x1b[0m`,
-  dim: (s) => `\x1b[2m${s}\x1b[0m`,
-  green: (s) => `\x1b[32m${s}\x1b[0m`,
-  red: (s) => `\x1b[31m${s}\x1b[0m`,
-  cyan: (s) => `\x1b[36m${s}\x1b[0m`,
-};
+const c = (() => {
+  const on = Boolean(process.stdout.isTTY);
+  const wrap = (code) => (on ? (s) => `\x1b[${code}m${s}\x1b[0m` : (s) => s);
+  return {
+    b: wrap('1'),
+    dim: wrap('2'),
+    green: wrap('32'),
+    red: wrap('31'),
+    cyan: wrap('36'),
+  };
+})();
 
 export async function runInit() {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   const existing = loadConfig();
   try {
     console.log(c.b('\n  libby-archiver — setup\n'));
     console.log(
-      c.dim('  Archives audiobooks you have on loan in Libby, with full metadata.\n') +
+      c.dim('  Archives audiobook, ebook, and magazine loans from Libby, with full metadata.\n') +
         c.dim('  You need: your library card number and your library’s Libby key.\n'),
     );
 
@@ -62,7 +82,7 @@ export async function runInit() {
     );
     let library;
     for (;;) {
-      const key = await ask(rl, '\n  Library key', { def: existing.library });
+      const key = await prompt('\n  Library key', { def: existing.library });
       if (!key) {
         console.log(c.red('  A library key is required.'));
         continue;
@@ -77,9 +97,9 @@ export async function runInit() {
       }
     }
 
-    // 3. Card
-    const cardNumber = await ask(rl, '\n  Library card number', { def: existing.cardNumber });
-    const pin = await ask(rl, '  Card PIN (blank if none)', { def: existing.pin });
+    // 3. Card (PIN entered without echo; a blank entry keeps any saved PIN)
+    const cardNumber = await prompt('  Library card number', { def: existing.cardNumber });
+    const pin = await prompt('  Card PIN (blank if none)', { def: existing.pin, muted: true });
 
     // 4. Verify
     const cfg = {
@@ -115,11 +135,12 @@ export async function runInit() {
     console.log(
       '\n  Next:\n' +
         c.b('    libby list') +
-        c.dim('              show your current audiobook loans\n') +
+        c.dim('              show your current loans\n') +
         c.b('    libby archive --all') +
-        c.dim('     download every audiobook loan\n'),
+        c.dim('     download every loan\n'),
     );
-  } finally {
-    rl.close();
+  } catch (e) {
+    console.log(c.red(`\n  init failed: ${e.message}`));
+    process.exitCode = 1;
   }
 }

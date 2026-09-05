@@ -18,7 +18,7 @@
 // Verified against every page component captured from libbyapp.com: 100% yield the real
 // <body>...</body>. The referenced assets are served as ordinary JPEGs, no cipher.
 
-import https from 'node:https';
+import { fetchBuffer } from './http.mjs';
 
 const CFC1_RE = /parent\.__bif_cfc1\(\s*self\s*,\s*'([^']*)'\s*\)/;
 
@@ -40,14 +40,14 @@ export function decodePage(html) {
 
 /**
  * SVG produced by the decoder omits the SVG/xlink namespace declarations (the browser
- * infers them when injecting into an HTML document). Add them so the page is valid
- * standalone XHTML for an EPUB reader.
+ * infers them when injecting into an HTML document). Add them to any <svg> open tag
+ * that doesn't already declare namespaces, so the page is valid standalone XHTML.
  */
 export function namespaceSvg(body) {
-  return body.replace(/<svg(\s|>)/g, (all, next) =>
-    /xmlns=/.test(all)
-      ? all
-      : `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"${next}`,
+  return body.replace(/<svg\b[^>]*>/gi, (tag) =>
+    /xmlns=/i.test(tag)
+      ? tag
+      : `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"${tag.slice(4)}`,
   );
 }
 
@@ -64,37 +64,15 @@ export function assetRefs(body) {
  * GET a resource from the read host with the primed session cookie, following redirects.
  * Returns { status, headers, body:Buffer }.
  */
-export function fetchReadResource(url, { cookie, insecureTLS = false } = {}, max = 5) {
-  const agent = new https.Agent({ keepAlive: true, rejectUnauthorized: !insecureTLS });
-  return new Promise((resolve, reject) => {
-    const attempt = (u, left) => {
-      const req = https.get(
-        u,
-        {
-          agent,
-          headers: {
-            'User-Agent': 'Mozilla/5.0',
-            Origin: 'https://libbyapp.com',
-            Accept: '*/*',
-            ...(cookie ? { Cookie: cookie } : {}),
-          },
-        },
-        (res) => {
-          const { statusCode, headers } = res;
-          if (statusCode >= 300 && statusCode < 400 && headers.location && left > 0) {
-            res.resume();
-            attempt(new URL(headers.location, u).toString(), left - 1);
-            return;
-          }
-          const chunks = [];
-          res.on('data', (c) => chunks.push(c));
-          res.on('end', () => resolve({ status: statusCode, headers, body: Buffer.concat(chunks) }));
-        },
-      );
-      req.on('error', reject);
-    };
-    attempt(url, max);
+export async function fetchReadResource(url, { cookie, insecureTLS = false, timeoutMs } = {}, max = 5) {
+  const res = await fetchBuffer(url, {
+    cookie,
+    insecureTLS,
+    timeoutMs,
+    headers: { Accept: '*/*' },
+    max,
   });
+  return { status: res.status, headers: res.headers, body: res.body };
 }
 
 /** Fetch one spine page (from extractSpine) and return its decoded, namespaced body. */

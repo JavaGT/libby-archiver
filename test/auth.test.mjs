@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveILS } from '../src/auth.mjs';
+import { resolveILS, sessionKey } from '../src/auth.mjs';
 
 const clientFor = (json) => ({
   requestOk: async (method, path) => {
@@ -28,5 +28,17 @@ test('rejects ambiguous auth forms', async () => {
   await assert.rejects(
     resolveILS(clientFor({ forms: [{ ilsName: 'one' }, { ilsName: 'two' }] }), '339', 'unknown'),
     /Could not determine the library card system/,
+  );
+});
+
+test('session keys separate cards and libraries so a cache never crosses accounts', () => {
+  assert.equal(sessionKey({ library: 'MyLib', cardNumber: '12345' }), 'mylib|12345');
+  assert.notEqual(
+    sessionKey({ library: 'mylib', cardNumber: '12345' }),
+    sessionKey({ library: 'mylib', cardNumber: '67890' }),
+  );
+  assert.notEqual(
+    sessionKey({ library: 'lib-a', cardNumber: '12345' }),
+    sessionKey({ library: 'lib-b', cardNumber: '12345' }),
   );
 });

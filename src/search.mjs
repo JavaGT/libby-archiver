@@ -4,7 +4,7 @@
 // entries with availability. We normalize the bits worth showing before a checkout:
 // title id, title/author, format, and whether a copy is available right now.
 
-import https from 'node:https';
+import { getJson } from './http.mjs';
 
 const THUNDER = 'thunder.api.overdrive.com';
 
@@ -37,7 +37,7 @@ export async function searchCatalog(library, query, opts = {}) {
   if (availableOnly) params.set('showOnlyAvailable', 'true');
 
   const path = `/v2/libraries/${encodeURIComponent(library)}/media?${params}`;
-  const res = await getJson(THUNDER, path, insecureTLS);
+  const res = await getJson(THUNDER, path, { insecureTLS });
   if (res.status !== 200) {
     throw new Error(`search failed: HTTP ${res.status}`);
   }
@@ -61,26 +61,4 @@ function normalizeResult(m) {
     year: m.publishDateText || (m.publishDate ? String(m.publishDate).slice(0, 4) : undefined),
     raw: m,
   };
-}
-
-function getJson(host, path, insecureTLS) {
-  const agent = new https.Agent({ rejectUnauthorized: !insecureTLS });
-  return new Promise((resolve, reject) => {
-    https
-      .get({ host, path, agent, headers: { Accept: 'application/json' } }, (res) => {
-        const chunks = [];
-        res.on('data', (c) => chunks.push(c));
-        res.on('end', () => {
-          const text = Buffer.concat(chunks).toString('utf8');
-          let json;
-          try {
-            json = JSON.parse(text);
-          } catch {
-            json = undefined;
-          }
-          resolve({ status: res.statusCode, json, text });
-        });
-      })
-      .on('error', reject);
-  });
 }

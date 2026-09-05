@@ -87,10 +87,20 @@ export function zip(entries) {
 
 const xml = (s) =>
   String(s ?? '')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '') // invalid in XML 1.0
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+
+/** Entry names come from the openbook — refuse anything that could escape OEBPS/. */
+const safeZipName = (name) => {
+  const n = String(name);
+  if (!n || n.startsWith('/') || n.split('/').includes('..')) {
+    throw new Error(`unsafe EPUB entry name: ${name}`);
+  }
+  return n;
+};
 
 const MIME = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', svg: 'image/svg+xml' };
 const mimeOf = (name) => MIME[name.split('.').pop().toLowerCase()] || 'application/octet-stream';
@@ -151,10 +161,10 @@ export function buildEpub(book) {
 
   // page XHTML files
   for (const it of pageItems) {
-    files.push({ name: `OEBPS/${it.href}`, data: wrapPage(it.part.body, { viewport: it.part.viewport }) });
+    files.push({ name: safeZipName(`OEBPS/${it.href}`), data: wrapPage(it.part.body, { viewport: it.part.viewport }) });
   }
-  for (const it of assetItems) files.push({ name: `OEBPS/${it.href}`, data: it.data });
-  if (coverItem) files.push({ name: `OEBPS/${coverItem.href}`, data: coverItem.data });
+  for (const it of assetItems) files.push({ name: safeZipName(`OEBPS/${it.href}`), data: it.data });
+  if (coverItem) files.push({ name: safeZipName(`OEBPS/${coverItem.href}`), data: coverItem.data });
 
   // nav.xhtml (EPUB3). Map TOC hrefs to real spine pages; drop unresolved.
   const spinePaths = new Set(spine.map((p) => p.path));

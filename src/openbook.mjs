@@ -18,6 +18,7 @@
 
 import https from 'node:https';
 import { GATEWAY_HOST } from './sentry.mjs';
+import { DEFAULT_TIMEOUT_MS } from './http.mjs';
 
 /** Build the `t=` codex blob the web client sends with `open` (unsigned base64 JSON). */
 export function buildCodex(loan, cfg) {
@@ -74,14 +75,72 @@ function descramble(key, data) {
   return out.join('');
 }
 
+/**
+ * Parse the eData array literal WITHOUT evaluating it — this text comes off the wire,
+ * and eval would hand OverDrive's page (or anything on that path) a JS interpreter
+ * inside a process holding the user's card credentials.
+ *
+ * Fast path: strict JSON. Fallback: a character-level parser that accepts only an
+ * array of single- or double-quoted strings with JS escapes — the two shapes bifocal
+ * actually emits. Anything else (identifiers, calls, objects) is rejected.
+ */
+function parseArrayLiteral(literal) {
+  try {
+    const j = JSON.parse(literal);
+    if (Array.isArray(j) && j.every((s) => typeof s === 'string')) return j;
+  } catch {
+    /* fall through to the strict string-array parser */
+  }
+  const out = [];
+  let cur = '';
+  let inString = false;
+  let quote = '';
+  let seenOpen = false;
+  for (let i = 0; i < literal.length; i++) {
+    const c = literal[i];
+    if (inString) {
+      if (c === '\\') {
+        const e = literal[++i];
+        const simple = { n: '\n', t: '\t', r: '\r', b: '\b', f: '\f', v: '\v', '0': '\0' };
+        if (e === 'x') {
+          cur += String.fromCharCode(parseInt(literal.slice(i + 1, i + 3), 16));
+          i += 2;
+        } else if (e === 'u') {
+          cur += String.fromCharCode(parseInt(literal.slice(i + 1, i + 5), 16));
+          i += 4;
+        } else if (e in simple) cur += simple[e];
+        else if (e === undefined) throw new Error('eData literal ends mid-escape');
+        else cur += e; // \' \" \\ and similar
+      } else if (c === quote) {
+        inString = false;
+        out.push(cur);
+        cur = '';
+      } else cur += c;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      inString = true;
+      quote = c;
+    } else if (/\s/.test(c) || c === ',' ) {
+      // separators outside strings are structural, nothing to record
+    } else if (c === '[' && !seenOpen && out.length === 0) {
+      seenOpen = true;
+    } else if (c === ']') {
+      // closing bracket
+    } else {
+      throw new Error(`eData literal contains a non-string token near ${JSON.stringify(c)}`);
+    }
+  }
+  if (inString) throw new Error('unterminated string in eData literal');
+  if (!seenOpen) throw new Error('eData literal is not an array');
+  return out;
+}
+
 /** Decode the player page's window.eData array into the openbook (`.b`). */
 export function decodeOpenbook(playerHtml, buid) {
   const m = playerHtml.match(/window\.eData\s*=\s*(\[[\s\S]*?\])\s*;\s*SPARK\.bifocalPath/);
   if (!m) throw new Error('window.eData not found in player page');
-  // The array literal is plain JSON-compatible once its JS escapes are honored; eval is
-  // the faithful way to reproduce the browser's own parse of the literal.
-  // eslint-disable-next-line no-eval
-  const eData = (0, eval)(m[1]);
+  const eData = parseArrayLiteral(m[1]);
   const key = buid.split('').reverse().join('');
   const json = Buffer.from(descramble(key, eData.join('"')), 'base64').toString('utf8');
   const doc = JSON.parse(json);
@@ -93,11 +152,12 @@ export function decodeOpenbook(playerHtml, buid) {
  * Establish the listen-host session and fetch the decoded openbook.
  * @returns {Promise<{ openbook: object, web: string, buid: string, cookie: string }>}
  */
-export async function fetchOpenbook(passport, { insecureTLS = false } = {}) {
-  const web = passport.urls.web; // https://dewey-<buid>.listen.libbyapp.com/
+export async function fetchOpenbook(passport, { insecureTLS = false, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+  const web = passport?.urls?.web; // https://dewey-<buid>.listen.libbyapp.com/
+  if (!web) throw new Error('open passport carries no web URL — the loan may not be openable');
   const host = new URL(web).host;
-  const buid = host.split('.')[0].split('-')[1];
-  const jar = new CookieJar(insecureTLS);
+  const buid = host.split('.')[0].replace(/^[^-]+-/, ''); // everything after "dewey-"
+  const jar = new CookieJar(insecureTLS, timeoutMs);
 
   // 1. Follow the signed `message` handshake (no Bearer) to set the listen cookie.
   await jar.follow(web + '?' + passport.message);
@@ -135,7 +195,8 @@ export function extractSpine(openbook, web) {
 // ---- minimal cookie-jar HTTPS client with redirect following -------------------
 
 class CookieJar {
-  constructor(insecureTLS) {
+  constructor(insecureTLS, timeoutMs = DEFAULT_TIMEOUT_MS) {
+    this.timeoutMs = timeoutMs;
     this.agent = new https.Agent({ keepAlive: true, rejectUnauthorized: !insecureTLS });
     this.jar = {}; // host -> {name: value}
   }
@@ -162,6 +223,7 @@ class CookieJar {
           path,
           method,
           agent: this.agent,
+          timeout: this.timeoutMs,
           headers: {
             'User-Agent': 'Mozilla/5.0',
             Origin: 'https://libbyapp.com',
@@ -177,6 +239,9 @@ class CookieJar {
             resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) });
           });
         },
+      );
+      req.on('timeout', () =>
+        req.destroy(new Error(`${method} ${host}${path}: timed out after ${this.timeoutMs}ms`)),
       );
       req.on('error', reject);
       req.end();

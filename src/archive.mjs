@@ -15,19 +15,19 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { openLoan, fetchOpenbook, extractSpine } from './openbook.mjs';
 import { downloadPart } from './download.mjs';
 import { fetchThunderMedia, maxResCoverUrl, downloadCover } from './metadata.mjs';
-
-const pad = (n, w = 2) => String(n).padStart(w, '0');
-
-const sanitize = (s) =>
-  (s ?? '')
-    .replace(/[/\\?%*:|"<>]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 150) || 'Untitled';
+import {
+  pad,
+  sanitize,
+  claimBookDir,
+  writeJson,
+  writeManifest,
+  decodeEntities,
+  cleanDescription,
+  extractIsbns,
+} from './util.mjs';
 
 /**
  * @param {object} ctx   { client, identity, cfg, log }
@@ -38,15 +38,13 @@ export async function archiveAudiobook(ctx, loan, outDir) {
   const { client, identity, cfg } = ctx;
   const log = ctx.log ?? (() => {});
 
-  const folder = `${sanitize(loan.author ?? 'Unknown Author')} - ${sanitize(loan.title)}`;
-  const bookDir = path.join(outDir, folder);
-  fs.mkdirSync(bookDir, { recursive: true });
+  const { bookDir, folder } = claimBookDir(outDir, loan);
   log(`\n=> ${folder}`);
 
   // 1. open -> passport
   log('   opening loan...');
   const passport = await openLoan(client, identity, loan, cfg);
-  writeJson(path.join(bookDir, 'passport.json'), passport);
+  writeJson(path.join(bookDir, 'passport.json'), passport, { secret: true });
 
   // 2. establish listen session, decode the embedded openbook -> spine
   log('   decoding openbook...');
@@ -59,7 +57,7 @@ export async function archiveAudiobook(ctx, loan, outDir) {
   log(`   ${spine.length} spine part(s)`);
 
   // 3. raw loan record
-  writeJson(path.join(bookDir, 'loan.json'), loan.raw);
+  writeJson(path.join(bookDir, 'loan.json'), loan.raw, { secret: true });
 
   // 4. supplementary metadata + cover
   log('   fetching catalog metadata...');
@@ -84,17 +82,19 @@ export async function archiveAudiobook(ctx, loan, outDir) {
   for (const part of spine) {
     const name = `Part ${pad(part.index)}.mp3`;
     const dest = path.join(bookDir, name);
-    if (fs.existsSync(dest) && fs.statSync(dest).size > 0) {
+    const have = fs.existsSync(dest) ? fs.statSync(dest).size : 0;
+    if (have > 0 && (!part.size || have === part.size)) {
       log(`   ${name} already present, skipping`);
       partFiles.push(dest);
       continue;
     }
-    process.stdout.write(`   downloading ${name} ...`);
+    if (have > 0) log(`   ${name} is ${have} bytes (expected ${part.size}), re-downloading`);
+    log(`   downloading ${name} ...`);
     const { bytes } = await downloadPart(part, dest, {
       cookie,
       insecureTLS: cfg.insecureTLS,
     });
-    process.stdout.write(` ${(bytes / 1e6).toFixed(1)} MB\n`);
+    log(`   ${name}: ${(bytes / 1e6).toFixed(1)} MB`);
     partFiles.push(dest);
   }
 
@@ -117,7 +117,7 @@ export async function archiveAudiobook(ctx, loan, outDir) {
     description: cleanDescription(openbook.description) || thunder?.description,
     language: openbook.language,
     subjects: (thunder?.subjects ?? []).map((s) => s.name),
-    isbns: extractIsbns(thunder),
+    isbns: extractIsbns(thunder?.formats),
     durationSeconds: spine.reduce((a, p) => a + (Number(p.duration) || 0), 0),
     parts: spine.length,
     chapters,
@@ -126,7 +126,7 @@ export async function archiveAudiobook(ctx, loan, outDir) {
   });
 
   // 7. integrity manifest + README
-  writeManifest(bookDir);
+  await writeManifest(bookDir);
   fs.writeFileSync(
     path.join(bookDir, 'README.txt'),
     readmeText(loan, spine.length),
@@ -135,49 +135,6 @@ export async function archiveAudiobook(ctx, loan, outDir) {
 
   log(`   done: ${bookDir}`);
   return bookDir;
-}
-
-/** openbook.description is { full, short } with HTML; return clean full text. */
-function cleanDescription(desc) {
-  const raw = typeof desc === 'string' ? desc : desc?.full ?? desc?.short;
-  if (!raw) return undefined;
-  return decodeEntities(raw.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '')).trim();
-}
-
-function decodeEntities(s) {
-  if (typeof s !== 'string') return s;
-  return s
-    .replace(/&apos;/g, "'")
-    .replace(/&quot;/g, '"')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>');
-}
-
-function extractIsbns(thunder) {
-  const formats = thunder?.formats ?? [];
-  const ids = [];
-  for (const f of formats) for (const id of f.identifiers ?? []) {
-    if (/ISBN/i.test(id.type ?? '')) ids.push(id.value);
-  }
-  return [...new Set(ids)];
-}
-
-function writeJson(file, data) {
-  fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
-}
-
-/** Write manifest.sha256 covering every file in the dir except itself. */
-function writeManifest(dir) {
-  const lines = [];
-  for (const name of fs.readdirSync(dir).sort()) {
-    if (name === 'manifest.sha256') continue;
-    const full = path.join(dir, name);
-    if (!fs.statSync(full).isFile()) continue;
-    const hash = crypto.createHash('sha256').update(fs.readFileSync(full)).digest('hex');
-    lines.push(`${hash}  ${name}`);
-  }
-  fs.writeFileSync(path.join(dir, 'manifest.sha256'), lines.join('\n') + '\n', 'utf8');
 }
 
 function readmeText(loan, parts) {

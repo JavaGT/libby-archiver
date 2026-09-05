@@ -3,66 +3,65 @@
 // Each MP3 is fetched from the listen host at {web}{path}?{cmpt}. The signed `cmpt`
 // param authorizes the request on its own: the listen host responds 302 to a signed
 // audioclips.cdn.overdrive.com URL, and NO Cookie header is required (confirmed).
-// We still pass the primed cookie if we have one — harmless, and future-proof.
+// The session cookie is only sent to the listen host itself; it is dropped when the
+// redirect crosses to the CDN.
+//
+// Parts land via a `.part` temp file and are verified against the expected byte size
+// (Content-Length, or the openbook's -odread-file-bytes) before being renamed into
+// place — a truncated download must never masquerade as a finished part.
 
 import fs from 'node:fs';
-import https from 'node:https';
+import crypto from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
+import { followRedirects } from './http.mjs';
+
+const PART_TIMEOUT_MS = 60_000; // idle socket timeout; slow-but-moving downloads are fine
 
 /**
  * Download one spine part to destPath, following redirects. Returns { bytes, sha256 }.
+ * Throws (leaving no temp file behind) on HTTP errors and truncated bodies.
  * @param {object} part   from extractSpine()
  * @param {string} destPath
- * @param {object} opts   { cookie, insecureTLS, onProgress }
+ * @param {object} opts   { cookie, insecureTLS, onProgress, timeoutMs }
  */
 export async function downloadPart(part, destPath, opts = {}) {
-  const { cookie, insecureTLS = false, onProgress } = opts;
-  const agent = new https.Agent({ keepAlive: true, rejectUnauthorized: !insecureTLS });
-
+  const { cookie, insecureTLS = false, onProgress, timeoutMs = PART_TIMEOUT_MS } = opts;
   const tmp = destPath + '.part';
-  const out = fs.createWriteStream(tmp);
-  const hash = (await import('node:crypto')).createHash('sha256');
-  let bytes = 0;
 
-  const res = await getFollowing(part.url, {
-    agent,
-    headers: {
-      Accept: '*/*',
-      Range: 'bytes=0-',
-      ...(cookie ? { Cookie: cookie } : {}),
-    },
-  });
-  if (res.statusCode !== 200 && res.statusCode !== 206) {
-    out.destroy();
+  try {
+    const res = await followRedirects(
+      part.url,
+      {
+        cookie,
+        insecureTLS,
+        timeoutMs,
+        headers: { Accept: '*/*', Range: 'bytes=0-' },
+      },
+      5,
+    );
+    if (res.statusCode !== 200 && res.statusCode !== 206) {
+      res.resume();
+      throw new Error(`part ${part.index} -> HTTP ${res.statusCode}`);
+    }
+
+    const hash = crypto.createHash('sha256');
+    let bytes = 0;
+    res.on('data', (c) => {
+      bytes += c.length;
+      hash.update(c);
+      if (onProgress) onProgress(bytes);
+    });
+    await pipeline(res, fs.createWriteStream(tmp));
+
+    const expected = Number(res.headers['content-length']) || Number(part.size) || 0;
+    if (expected && bytes !== expected) {
+      throw new Error(`part ${part.index}: received ${bytes} bytes, expected ${expected}`);
+    }
+
+    fs.renameSync(tmp, destPath);
+    return { bytes, sha256: hash.digest('hex') };
+  } catch (e) {
     fs.rmSync(tmp, { force: true });
-    throw new Error(`part ${part.index} -> HTTP ${res.statusCode}`);
+    throw e;
   }
-  res.on('data', (c) => {
-    bytes += c.length;
-    hash.update(c);
-    if (onProgress) onProgress(bytes);
-  });
-  await pipeline(res, out);
-  fs.renameSync(tmp, destPath);
-  return { bytes, sha256: hash.digest('hex') };
-}
-
-/** GET that transparently follows up to `max` redirects, resolving to the response stream. */
-function getFollowing(url, opts, max = 5) {
-  return new Promise((resolve, reject) => {
-    const attempt = (u, left) => {
-      const req = https.get(u, opts, (res) => {
-        const { statusCode, headers } = res;
-        if (statusCode >= 300 && statusCode < 400 && headers.location && left > 0) {
-          res.resume(); // discard body
-          const next = new URL(headers.location, u).toString();
-          attempt(next, left - 1);
-        } else {
-          resolve(res);
-        }
-      });
-      req.on('error', reject);
-    };
-    attempt(url, max);
-  });
 }

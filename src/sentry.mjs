@@ -13,6 +13,7 @@
 // verification for that case only. Leave it off unless you hit ERR_TLS_CERT_ALTNAME_INVALID.
 
 import https from 'node:https';
+import { DEFAULT_TIMEOUT_MS } from './http.mjs';
 
 export const READ_HOST = 'sentry-read.svc.overdrive.com';
 export const GATEWAY_HOST = 'sentry.libbyapp.com';
@@ -42,9 +43,15 @@ export class SentryError extends Error {
  * flow can travel over a single socket (the browser's chip binding is happier that way).
  */
 export class SentryClient {
-  constructor({ host = READ_HOST, insecureTLS = false, userAgent = DEFAULT_UA } = {}) {
+  constructor({
+    host = READ_HOST,
+    insecureTLS = false,
+    userAgent = DEFAULT_UA,
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+  } = {}) {
     this.host = host;
     this.userAgent = userAgent;
+    this.timeoutMs = timeoutMs;
     this.agent = new https.Agent({
       keepAlive: true,
       maxSockets: 1,
@@ -70,6 +77,7 @@ export class SentryClient {
           path,
           method,
           agent: this.agent,
+          timeout: this.timeoutMs,
           headers: {
             Accept: 'application/json',
             'User-Agent': this.userAgent,
@@ -99,6 +107,9 @@ export class SentryClient {
             resolve({ status: res.statusCode, headers: res.headers, text, json, buffer: buf });
           });
         },
+      );
+      req.on('timeout', () =>
+        req.destroy(new SentryError(`${method} ${path} timed out after ${this.timeoutMs}ms`)),
       );
       req.on('error', reject);
       if (data != null) req.write(data);

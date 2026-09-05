@@ -14,20 +14,20 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { openLoan, fetchOpenbook, extractSpine, openKindFor } from './openbook.mjs';
 import { fetchPage, fetchReadResource, assetRefs } from './read.mjs';
 import { buildEpub } from './epub.mjs';
 import { fetchThunderMedia, maxResCoverUrl, downloadCover } from './metadata.mjs';
-
-const pad = (n, w) => String(n).padStart(w, '0');
-
-const sanitize = (s) =>
-  (s ?? '')
-    .replace(/[/\\?%*:|"<>]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 150) || 'Untitled';
+import {
+  assetName,
+  safeJoin,
+  sanitize,
+  claimBookDir,
+  writeJson,
+  writeManifest,
+  cleanDescription,
+  extractIsbns,
+} from './util.mjs';
 
 /**
  * @param {object} ctx   { client, identity, cfg, log }
@@ -39,8 +39,7 @@ export async function archiveReadable(ctx, loan, outDir) {
   const log = ctx.log ?? (() => {});
   const kind = openKindFor(loan); // 'magazine' | 'book'
 
-  const folder = `${sanitize(loan.author ?? 'Unknown Author')} - ${sanitize(loan.title)}`;
-  const bookDir = path.join(outDir, folder);
+  const { bookDir, folder } = claimBookDir(outDir, loan);
   const assetsDir = path.join(bookDir, 'assets');
   fs.mkdirSync(assetsDir, { recursive: true }); // pages create their own dirs from their paths
   log(`\n=> ${folder}  [${loan.type}]`);
@@ -48,7 +47,7 @@ export async function archiveReadable(ctx, loan, outDir) {
   // 1. open -> passport
   log('   opening loan...');
   const passport = await openLoan(client, identity, loan, cfg, kind);
-  writeJson(path.join(bookDir, 'passport.json'), passport);
+  writeJson(path.join(bookDir, 'passport.json'), passport, { secret: true });
 
   // 2. read session + embedded openbook -> spine of page components
   log('   decoding openbook...');
@@ -59,7 +58,7 @@ export async function archiveReadable(ctx, loan, outDir) {
   const fixedLayout = (openbook.spine ?? []).some((p) => p['rendition-layout'] === 'pre-paginated');
   log(`   ${spine.length} page(s)${fixedLayout ? ', fixed-layout' : ''}`);
 
-  writeJson(path.join(bookDir, 'loan.json'), loan.raw);
+  writeJson(path.join(bookDir, 'loan.json'), loan.raw, { secret: true });
 
   // 3. catalog metadata + cover
   log('   fetching catalog metadata...');
@@ -79,40 +78,39 @@ export async function archiveReadable(ctx, loan, outDir) {
   }
 
   // 4. fetch + decode every page; gather referenced assets
+  // Page paths come from the openbook — they are validated to stay inside bookDir.
   const width = String(spine.length).length;
   const pageEntries = [];
   const wantedAssets = new Set();
   for (const part of spine) {
-    process.stdout.write(`\r   decoding page ${pad(part.index, width)}/${spine.length} ...`);
+    log(`   decoding page ${part.index}/${spine.length} ...`);
     const body = await fetchPage(part, { cookie, insecureTLS: cfg.insecureTLS });
     // keep each page at its original openbook path so relative ../assets refs stay correct
-    const dest = path.join(bookDir, part.path);
+    const dest = safeJoin(bookDir, part.path);
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     fs.writeFileSync(dest, body, 'utf8');
     for (const ref of assetRefs(body)) wantedAssets.add(ref); // normalized 'assets/xxx.jpg'
     pageEntries.push({ path: part.path, body, viewport: viewportOf(openbook, part) });
   }
-  process.stdout.write('\n');
 
   // 5. fetch each unique asset (plaintext)
   const assetEntries = [];
   let i = 0;
   for (const ref of wantedAssets) {
     i++;
-    const name = ref.split('/').pop();
-    process.stdout.write(`\r   fetching asset ${i}/${wantedAssets.size} ...`);
+    const name = assetName(ref);
+    log(`   fetching asset ${i}/${wantedAssets.size} (${name}) ...`);
     const res = await fetchReadResource(web.replace(/\/$/, '') + '/' + ref, {
       cookie,
       insecureTLS: cfg.insecureTLS,
     });
     if (res.status !== 200) {
-      log(`\n   asset ${ref} -> HTTP ${res.status} (skipped)`);
+      log(`   asset ${ref} -> HTTP ${res.status} (skipped)`);
       continue;
     }
     fs.writeFileSync(path.join(assetsDir, name), res.body);
     assetEntries.push({ path: `assets/${name}`, data: res.body });
   }
-  if (wantedAssets.size) process.stdout.write('\n');
 
   // 6. assemble the EPUB
   log('   assembling EPUB...');
@@ -152,11 +150,11 @@ export async function archiveReadable(ctx, loan, outDir) {
     assets: assetEntries.length,
     fixedLayout,
     subjects: (thunder?.subjects ?? []).map((s) => s.name),
-    isbns: extractIsbns(thunder),
+    isbns: extractIsbns(thunder?.formats),
     expires: loan.expires,
     archivedAt: new Date().toISOString(),
   });
-  writeManifest(bookDir);
+  await writeManifest(bookDir);
   fs.writeFileSync(path.join(bookDir, 'README.txt'), readmeText(loan, spine.length, assetEntries.length), 'utf8');
 
   log(`   done: ${bookDir}`);
@@ -184,50 +182,6 @@ function buildNav(openbook, spinePaths) {
     if (href) out.push({ title: e.title || e.sectionName || e.pageRange || href, href });
   }
   return out;
-}
-
-function cleanDescription(desc) {
-  const raw = typeof desc === 'string' ? desc : desc?.full ?? desc?.short;
-  if (!raw) return undefined;
-  return raw
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
-    .replace(/&apos;/g, "'")
-    .replace(/&quot;/g, '"')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .trim();
-}
-
-function extractIsbns(thunder) {
-  const ids = [];
-  for (const f of thunder?.formats ?? []) for (const id of f.identifiers ?? []) {
-    if (/ISBN/i.test(id.type ?? '')) ids.push(id.value);
-  }
-  return [...new Set(ids)];
-}
-
-function writeJson(file, data) {
-  fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
-}
-
-function writeManifest(dir) {
-  const lines = [];
-  const walk = (d, rel = '') => {
-    for (const name of fs.readdirSync(d).sort()) {
-      const full = path.join(d, name);
-      const r = rel ? `${rel}/${name}` : name;
-      if (fs.statSync(full).isDirectory()) walk(full, r);
-      else if (r !== 'manifest.sha256') {
-        const hash = crypto.createHash('sha256').update(fs.readFileSync(full)).digest('hex');
-        lines.push(`${hash}  ${r}`);
-      }
-    }
-  };
-  walk(dir);
-  fs.writeFileSync(path.join(dir, 'manifest.sha256'), lines.join('\n') + '\n', 'utf8');
 }
 
 function readmeText(loan, pages, assets) {

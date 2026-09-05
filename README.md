@@ -40,7 +40,8 @@ npx libby-archiver archive --all
 
 ## Output
 
-Each title gets its own self-contained folder. Audiobooks:
+Each title gets its own self-contained folder. If two loans share the same author and
+title, the second gets ` [titleId]` appended so their files can never mix. Audiobooks:
 
 ```
 <Author> - <Title>/
@@ -92,7 +93,9 @@ libby help                     usage
 `search`, `borrow`, `return`, and `hold` cover the full loan lifecycle without opening the
 app. `search`, `info`, and `avail` need only your library key (no card); the rest use your
 saved card. Title ids come from `libby search` and feed straight into `info`, `avail`,
-`borrow`, `hold`, and `archive --title`.
+`borrow`, `hold`, and `archive --title`. `search` covers all formats by default (narrow it
+with `--format`), and `borrow` detects the title's format automatically. `return` and
+`unhold` ask for confirmation; add `--yes` to skip it in scripts.
 
 `info` shows the full catalog record (description, formats, subjects, star rating, ISBNs, and
 OverDrive's "theme" tags). `avail` does a live availability check — copies, holds, and
@@ -103,8 +106,10 @@ Search, borrow, list, and archive take a few extra flags:
 ```
 --format <audiobook|ebook|magazine|all>   filter format (search/borrow/list/archive)
 --available                               search: only titles available now
+--page <n>                                search: result page (20 per page)
 --lucky-day                               borrow: take a Lucky Day copy if offered
 --period <days>                           borrow: lending period (default: preferred)
+--yes                                     return/unhold: skip the confirmation
 ```
 
 `archive --all` covers audiobooks, ebooks, and magazines; add `--format magazine` (etc.) to
@@ -169,7 +174,8 @@ lower-level pieces are exported too: `openLoan`, `fetchOpenbook`, `decodeOpenboo
    player page embeds them in an obfuscated `window.eData` array that OverDrive's bifocal bundle
    decodes in the browser and then deletes. This reproduces that decode in Node: establish the
    listen session with the signed `message`, fetch the player page, descramble `eData` using the
-   reversed `buid` as the key, and `JSON.parse` the result. See
+   reversed `buid` as the key, and `JSON.parse` the result. The array literal is parsed
+   structurally, never evaluated — a fetched page must never run as code. See
    [`src/openbook.mjs`](src/openbook.mjs).
 4. **Download.**
    - *Audiobooks:* fetch each part with the listen-session cookie. The listen host redirects to a
