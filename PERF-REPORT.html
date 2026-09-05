@@ -258,19 +258,6 @@
     
     <p class="dim files">test/e2e.test.mjs · test/helpers/overdrive-sim.mjs · src/openbook.mjs · src/http.mjs · src/metadata.mjs</p>
   </div>
-  <div class="card" id="W17">
-    <div class="card-head">
-      <span class="wave-id">W17</span>
-      <h3>Hash-once integrity pass</h3>
-      <span class="badge good">merged</span>
-      <span class="dim area">library · CPU + speed</span>
-    </div>
-    <p class="change">downloadPart already computes each part’s sha256 while streaming, and archive.mjs was throwing it away — so writeManifest re-read the entire book to hash what had just been hashed. Part digests are now carried into writeManifest(dir, { known }), which trusts exact digests for matching files and only re-reads content nobody hashed (sidecars, cover, README).</p>
-    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>integrity pass, 50 MB archive, digests known</td><td class="num">22.8 ms</td><td class="num"><b class="good">0.28 ms</b> <span class="dim">(99% less, 81.43×)</span></td></tr></table>
-    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>Known digests are trusted, not re-verified (re-verifying would defeat the purpose); a streaming writer bug would surface as a bad manifest — the e2e suite validates every manifest line against file contents to police exactly this</li><li>Skipped (already-present) parts have no digest and are re-hashed as before — correct, since their bytes were not observed this run</li><li>Warm-cache M4 numbers; on cold caches the win is a full re-read of the book avoided</li></ul>
-    
-    <p class="dim files">src/util.mjs · src/archive.mjs · test/manifest-ref.test.mjs</p>
-  </div>
   <div class="card" id="W16">
     <div class="card-head">
       <span class="wave-id">W16</span>
@@ -283,6 +270,19 @@
     <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>Resident payload memory now scales with the largest entry, not the book; the remaining 55 MB is mostly the Node floor (~48 MB)</li><li>A payload file vanishing between write and read fails the archive loudly mid-stream (ENOENT, .part cleaned) — pinned by test; wall time unchanged (≈206 ms both paths in the bench harness)</li><li>Methodology: fresh process per impl, RSS sampled at entry boundaries — one-shot RSS masks the win on macOS (freed pages are never returned)</li></ul>
     
     <p class="dim files">src/epub.mjs · src/archive-read.mjs · test/ram-thunk.test.mjs · perf/zip-thunk-one.mjs</p>
+  </div>
+  <div class="card" id="W17">
+    <div class="card-head">
+      <span class="wave-id">W17</span>
+      <h3>Hash-once integrity pass</h3>
+      <span class="badge good">merged</span>
+      <span class="dim area">library · CPU + speed</span>
+    </div>
+    <p class="change">downloadPart already computes each part’s sha256 while streaming, and archive.mjs was throwing it away — so writeManifest re-read the entire book to hash what had just been hashed. Part digests are now carried into writeManifest(dir, { known }), which trusts exact digests for matching files and only re-reads content nobody hashed (sidecars, cover, README).</p>
+    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>integrity pass, 50 MB archive, digests known</td><td class="num">22.8 ms</td><td class="num"><b class="good">0.28 ms</b> <span class="dim">(99% less, 81.43×)</span></td></tr></table>
+    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>Known digests are trusted, not re-verified (re-verifying would defeat the purpose); a streaming writer bug would surface as a bad manifest — the e2e suite validates every manifest line against file contents to police exactly this</li><li>Skipped (already-present) parts have no digest and are re-hashed as before — correct, since their bytes were not observed this run</li><li>Warm-cache M4 numbers; on cold caches the win is a full re-read of the book avoided</li></ul>
+    
+    <p class="dim files">src/util.mjs · src/archive.mjs · test/manifest-ref.test.mjs</p>
   </div>
 
 <h2>Baseline measurements (code at be863fd (main))</h2>

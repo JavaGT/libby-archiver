@@ -452,32 +452,6 @@
       ]
     },
     {
-      "id": "W17",
-      "name": "Hash-once integrity pass",
-      "area": "library · CPU + speed",
-      "status": "merged",
-      "change": "downloadPart already computes each part’s sha256 while streaming, and archive.mjs was throwing it away — so writeManifest re-read the entire book to hash what had just been hashed. Part digests are now carried into writeManifest(dir, { known }), which trusts exact digests for matching files and only re-reads content nobody hashed (sidecars, cover, README).",
-      "metrics": [
-        {
-          "name": "integrity pass, 50 MB archive, digests known",
-          "before": 22.8,
-          "after": 0.28,
-          "unit": " ms",
-          "direction": "lower"
-        }
-      ],
-      "tradeoffs": [
-        "Known digests are trusted, not re-verified (re-verifying would defeat the purpose); a streaming writer bug would surface as a bad manifest — the e2e suite validates every manifest line against file contents to police exactly this",
-        "Skipped (already-present) parts have no digest and are re-hashed as before — correct, since their bytes were not observed this run",
-        "Warm-cache M4 numbers; on cold caches the win is a full re-read of the book avoided"
-      ],
-      "files": [
-        "src/util.mjs",
-        "src/archive.mjs",
-        "test/manifest-ref.test.mjs"
-      ]
-    },
-    {
       "id": "W16",
       "name": "Disk-backed EPUB payloads (assembly RAM)",
       "area": "library · RAM",
@@ -509,6 +483,32 @@
         "src/archive-read.mjs",
         "test/ram-thunk.test.mjs",
         "perf/zip-thunk-one.mjs"
+      ]
+    },
+    {
+      "id": "W17",
+      "name": "Hash-once integrity pass",
+      "area": "library · CPU + speed",
+      "status": "merged",
+      "change": "downloadPart already computes each part’s sha256 while streaming, and archive.mjs was throwing it away — so writeManifest re-read the entire book to hash what had just been hashed. Part digests are now carried into writeManifest(dir, { known }), which trusts exact digests for matching files and only re-reads content nobody hashed (sidecars, cover, README).",
+      "metrics": [
+        {
+          "name": "integrity pass, 50 MB archive, digests known",
+          "before": 22.8,
+          "after": 0.28,
+          "unit": " ms",
+          "direction": "lower"
+        }
+      ],
+      "tradeoffs": [
+        "Known digests are trusted, not re-verified (re-verifying would defeat the purpose); a streaming writer bug would surface as a bad manifest — the e2e suite validates every manifest line against file contents to police exactly this",
+        "Skipped (already-present) parts have no digest and are re-hashed as before — correct, since their bytes were not observed this run",
+        "Warm-cache M4 numbers; on cold caches the win is a full re-read of the book avoided"
+      ],
+      "files": [
+        "src/util.mjs",
+        "src/archive.mjs",
+        "test/manifest-ref.test.mjs"
       ]
     }
   ],
