@@ -30,10 +30,11 @@ if (!sim) {
     assert.ok(ms < 190, `getTitle took ${Math.round(ms)} ms — characteristics look serialized`);
   });
 
-  test('characteristics failure still degrades to [] without failing the title', async (t) => {
-    // point stargazer at a dead port: getTitle must still return the parsed record
+  test('characteristics failure still degrades to [] without failing the title', async () => {
+    // point stargazer at a dead port: getTitle must still return the parsed record.
+    // query-bust the import so the module re-reads LIBBY_STARGAZER_HOST.
     process.env.LIBBY_STARGAZER_HOST = 'localhost:9'; // nothing listens here
-    const { getTitle: fresh } = await import('../src/discover.mjs');
+    const { getTitle: fresh } = await import('../src/discover.mjs?stargazer=down');
     const detail = await fresh('testlib', '101', { insecureTLS: true });
     assert.equal(detail.title, 'E2E Audiobook');
     assert.deepEqual(detail.characteristics, []);
