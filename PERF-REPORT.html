@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="refresh" content="300">
+<title>libby-archiver — perf trial perf-trial-20260906-030748</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { font: 15px/1.55 -apple-system, 'SF Pro Text', Helvetica, sans-serif; margin: 0; background: #101418; color: #dde4ea; }
+  main { max-width: 980px; margin: 0 auto; padding: 28px 20px 80px; }
+  header { border-bottom: 1px solid #2a3440; padding-bottom: 14px; margin-bottom: 22px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 34px 0 10px; color: #9fb3c8; text-transform: uppercase; letter-spacing: .08em; }
+  .sub { color: #8fa1b3; }
+  .meta { color: #66788a; font-size: 13px; }
+  .refresh-note { display: inline-block; margin-top: 8px; font-size: 12.5px; color: #59c98b; border: 1px solid #2c4a3b; border-radius: 6px; padding: 2px 10px; }
+  .tldr { display: flex; gap: 12px; flex-wrap: wrap; margin: 18px 0; }
+  .stat { background: #171e26; border: 1px solid #2a3440; border-radius: 10px; padding: 12px 16px; min-width: 150px; }
+  .stat b { display: block; font-size: 21px; color: #59c98b; }
+  .stat span { color: #8fa1b3; font-size: 12.5px; }
+  .card { background: #171e26; border: 1px solid #2a3440; border-radius: 10px; padding: 14px 18px; margin: 12px 0; }
+  .card-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .card h3 { font-size: 15.5px; margin: 0; }
+  .wave-id { font-family: ui-monospace, monospace; font-size: 12px; color: #6f8497; }
+  .area { margin-left: auto; font-size: 12px; }
+  .change { margin: 8px 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; margin: 10px 0; }
+  th, td { text-align: left; padding: 4px 10px 4px 0; border-bottom: 1px solid #232d38; }
+  th { color: #8fa1b3; font-weight: 600; font-size: 12px; }
+  .num { font-family: ui-monospace, monospace; }
+  .good { color: #59c98b; }
+  .warn { color: #e8b45a; }
+  .bad { color: #e86a6a; }
+  .dim { color: #8296a8; }
+  .badge { font-size: 11px; border: 1px solid #3a4652; color: #9fb3c8; border-radius: 20px; padding: 1px 9px; vertical-align: middle; }
+  .badge.good { border-color: #2c4a3b; color: #59c98b; }
+  .badge.live { border-color: #4a3f2c; color: #e8b45a; }
+  .badge.bad { border-color: #4a2c2c; color: #e86a6a; }
+  .badge.est { border-color: #2c3f4a; color: #6ab8e8; }
+  ul.tradeoffs { margin: 4px 0 8px; padding-left: 20px; }
+  ul.tradeoffs li { margin: 2px 0; }
+  .verify { color: #59c98b; font-size: 13px; margin: 6px 0 0; }
+  .files { font-family: ui-monospace, monospace; font-size: 11.5px; margin: 8px 0 0; }
+  footer { margin-top: 40px; border-top: 1px solid #2a3440; padding-top: 12px; color: #66788a; font-size: 12.5px; }
+  code { background: #1d2630; border-radius: 4px; padding: 1px 5px; font-size: 12.5px; }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>libby-archiver — performance trial <code>perf-trial-20260906-030748</code></h1>
+  <div class="sub">Continuous optimization campaign: speed, CPU, RAM, storage — library + CLI. Started 2026-09-06 03:07 (local).</div>
+  <div class="meta">base commit be863fd (main) · node v26.7.0 · Apple M4</div>
+  <span class="refresh-note">⟳ this page refreshes itself every 5 min</span>
+  <div class="tldr">
+    <div class="stat"><b>27×</b><span>EPUB assembly (189→7 ms)</span></div><div class="stat"><b>−26%</b><span>zip peak RAM (108→80 MB)</span></div><div class="stat"><b>3.8×</b><span>network fetch pattern</span></div><div class="stat"><b>2–7×</b><span>page-blob decode</span></div><div class="stat"><b>10 waves</b><span>9 merged · 1 measured &amp; rejected</span></div><div class="stat"><b>52</b><span>tests (was 28)</span></div>
+  </div>
+</header>
+
+<h2>TL;DR</h2>
+<p>All waves are integrated on branch <code>perf-trial-20260906-030748</code> (hub). <code>main</code> is untouched. 52/52 tests pass (28 at baseline), and every optimization is guarded by a regression or tradeoff-pinning test.</p><p>The library's biggest cost was the dependency-free EPUB zip writer: a pure-JS CRC32 loop (Node ships a native one — 70× faster), deflate level 9 applied to JPEG scans that compress 0% at any level, and a final whole-archive buffer copy. Fixing all three took EPUB assembly of a 13 MB magazine from ~189 ms to ~7 ms and cut peak memory 26%, with output marginally <i>smaller</i> than baseline.</p><p>The interface's biggest cost was serial round trips: every REST call paid a fresh TLS handshake (no keep-alive), audiobook parts downloaded one at a time, and a magazine's pages/assets were fetched one at a time — a 300-page magazine spent minutes waiting on the network. Measured against a local latency-injecting TLS server: connection reuse halved a 30-request loopback run (each saved handshake is worth 50–150 ms against the real OverDrive hosts), and bounded 4-way concurrency turned 120 × 25 ms requests from 3.2 s into 0.83 s (3.84×).</p><p>One candidate was measured and rejected: lazy-loading CLI commands (≤9 ms ceiling, invisible next to process spawn). It stays recorded so nobody re-litigates it.</p>
+
+<h2>Waves</h2>
+
+  <div class="card" id="W1">
+    <div class="card-head">
+      <span class="wave-id">W1</span>
+      <h3>Native CRC32 in the EPUB zip writer</h3>
+      <span class="badge good">merged</span>
+      <span class="dim area">library · CPU</span>
+    </div>
+    <p class="change">Replaced the 256-entry-table pure-JS CRC32 loop in src/epub.mjs with Node's native zlib.crc32.</p>
+    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>CRC32 of 4 MB buffer</td><td class="num">7.77 ms</td><td class="num"><b class="good">0.11 ms</b> <span class="dim">(99% less, 70.64×)</span></td></tr></table>
+    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>engines floor moved from &gt;=20 to &gt;=20.15 (zlib.crc32 availability) — done in package.json</li><li>CRC outputs verified byte-identical by the bench</li></ul>
+    
+    <p class="dim files">src/epub.mjs</p>
+  </div>
+  <div class="card" id="W2">
+    <div class="card-head">
+      <span class="wave-id">W2</span>
+      <h3>Store already-compressed media instead of deflating</h3>
+      <span class="badge good">merged</span>
+      <span class="dim area">library · CPU + storage</span>
+    </div>
+    <p class="change">zip() ran deflate level 9 over every entry. JPEG/PNG/GIF/webp/avif/MP3/MP4/m4a/PDF payloads compress 0% (measured ratio 1.000 at levels 6 and 9) — they are now STORED, like the mimetype entry always was.</p>
+    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>deflate 1 MB JPEG-like data, level 9</td><td class="num">14.45 ms</td><td class="num"><b class="good">0 ms</b> <span class="dim">(100% less, Infinity×)</span></td></tr><tr><td>13 MB synthetic EPUB assembly</td><td class="num">188.7 ms</td><td class="num"><b class="good">7 ms</b> <span class="dim">(96% less, 26.96×)</span></td></tr></table>
+    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>A mislabeled media file (a .jpg that is really uncompressed data) would now be carried raw — in practice scan assets are real JPEGs, and the whole EPUB came out ~0.2% SMALLER than baseline (no deflate overhead on incompressible bytes)</li><li>EPUB readers accept stored entries (spec-compliant); unzip -t clean, and now asserted in test/epub-integrity.test.mjs</li></ul>
+    
+    <p class="dim files">src/epub.mjs</p>
+  </div>
+  <div class="card" id="W3">
+    <div class="card-head">
+      <span class="wave-id">W3</span>
+      <h3>Deflate level 9 → 6 for compressible entries</h3>
+      <span class="badge good">merged</span>
+      <span class="dim area">library · CPU vs storage tradeoff</span>
+    </div>
+    <p class="change">Text/XHTML entries deflate at level 6: 2× faster for ratio 0.088 → 0.090.</p>
+    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>deflate 1 MB XHTML-like text</td><td class="num">12.02 ms</td><td class="num"><b class="good">5.68 ms</b> <span class="dim">(53% less, 2.12×)</span></td></tr></table>
+    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>Text entries grow ~2%; whole-EPUB impact well under 1% because image scans dominate the bytes</li><li>One-line revert if the owner prefers level 9</li></ul>
+    
+    <p class="dim files">src/epub.mjs</p>
+  </div>
+  <div class="card" id="W4">
+    <div class="card-head">
+      <span class="wave-id">W4</span>
+      <h3>Single-allocation zip assembly (peak RAM)</h3>
+      <span class="badge good">merged</span>
+      <span class="dim area">library · RAM</span>
+    </div>
+    <p class="change">zip() built a chunk list then Buffer.concat'd the entire EPUB a second time. It now writes into one preallocated buffer (deflate first to learn sizes, then fill).</p>
+    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>peak RSS assembling 12.7 MB EPUB</td><td class="num">108 MB</td><td class="num"><b class="good">80 MB</b> <span class="dim">(26% less, 1.35×)</span></td></tr></table>
+    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>Compressed entries still exist transiently (synchronous deflate cannot target an existing buffer). A streaming zip-to-file would cut peak further but changes the public API — left for the owner to want</li><li>During the rewrite an allocUnsafe EOCD zero-fill bug was introduced and caught by unzip -t; a test now asserts those fields</li></ul>
+    
+    <p class="dim files">src/epub.mjs</p>
+  </div>
+  <div class="card" id="W5">
+    <div class="card-head">
+      <span class="wave-id">W5</span>
+      <h3>Faster __bif_cfc1 page-blob decode</h3>
+      <span class="badge good">merged</span>
+      <span class="dim area">library · CPU</span>
+    </div>
+    <p class="change">read.mjs decoded every read-host page with a regex replace (per-match overhead at MB scale). Replaced with a hand-rolled code-unit quad-swap loop that is exactly equivalent — including the subtle rule that groups containing line terminators pass through and realign scanning.</p>
+    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>decode 2.8 MB blob (bench, in-process)</td><td class="num">65 ms</td><td class="num"><b class="good">34.5 ms</b> <span class="dim">(47% less, 1.88×)</span></td></tr><tr><td>same, fresh-process A/B</td><td class="num">60 ms</td><td class="num"><b class="good">8.6 ms</b> <span class="dim">(86% less, 6.98×)</span></td></tr></table>
+    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>Equivalence property-tested against the original regex: deterministic hostile-input sweep + hand-computed edges (4n±k lengths, terminators) in test/read.test.mjs</li></ul>
+    
+    <p class="dim files">src/read.mjs</p>
+  </div>
+  <div class="card" id="W6">
+    <div class="card-head">
+      <span class="wave-id">W6</span>
+      <h3>Parallel integrity-manifest hashing</h3>
+      <span class="badge good">merged</span>
+      <span class="dim area">library · speed</span>
+    </div>
+    <p class="change">writeManifest() hashed files one stream at a time; now ~8 files in flight with 1 MiB reads, order preserved.</p>
+    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>hash 50 MB archive, warm cache</td><td class="num">23.98 ms</td><td class="num"><b class="good">18.01 ms</b> <span class="dim">(25% less, 1.33×)</span></td></tr></table>
+    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>Warm-cache gain is modest because SHA-256 runs at hardware speed on M4 and the cache absorbs I/O; the win grows on cold caches/slower disks and larger archives</li><li>Output is byte-identical to the sequential implementation — pinned in test/manifest-ref.test.mjs against a vendored copy of the old algorithm</li></ul>
+    
+    <p class="dim files">src/util.mjs</p>
+  </div>
+  <div class="card" id="W7">
+    <div class="card-head">
+      <span class="wave-id">W7</span>
+      <h3>Keep-alive HTTP connection pooling</h3>
+      <span class="badge good">merged</span>
+      <span class="dim area">interface/network · latency</span>
+    </div>
+    <p class="change">REST calls used Node's default global agent (keepAlive off): every Thunder/stargazer/cover/page request paid a fresh TLS handshake. One pooled agent per TLS mode now: keepAlive, maxSockets 8, maxFreeSockets 4, 30 s keep-alive, noDelay, agent-level timeout backstop — with the per-request timeout/destroy handlers untouched so the historic wedge failure stays closed.</p>
+    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>30 sequential GETs, loopback TLS</td><td class="num">82 ms</td><td class="num"><b class="good">41 ms</b> <span class="dim">(50% less, 2×)</span></td></tr><tr><td>server-side connections for those 30 requests</td><td class="num">30</td><td class="num"><b>reused (≤1)</b></td></tr></table>
+    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>Loopback understates the win: each avoided handshake is worth ~50–150 ms against the real OverDrive hosts</li><li>Up to 4 idle sockets per host linger ≤30 s; CLI exit closes them</li><li>Pinned by tests: reuse count, hung-socket timeout, 12-over-8 drain (test/http.test.mjs)</li></ul>
+    
+    <p class="dim files">src/http.mjs</p>
+  </div>
+  <div class="card" id="W8">
+    <div class="card-head">
+      <span class="wave-id">W8</span>
+      <h3>Concurrent audiobook part downloads</h3>
+      <span class="badge good">merged</span>
+      <span class="dim area">library · wall-clock</span>
+    </div>
+    <p class="change">Spine parts download 3 at a time (mapLimit) instead of strictly sequentially. Skip/resume logic, per-part logs, fail-fast, and spine order preserved.</p>
+    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>network pattern, 120 req × 25 ms (limit 4 measured)</td><td class="num">3202 ms</td><td class="num"><b class="good">834 ms</b> <span class="dim">(74% less, 3.84×)</span></td></tr></table>
+    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>3 simultaneous CDN connections per title — deliberately low (the browser uses 6+)</li><li>Part-level failure still aborts the loan; resume unchanged</li></ul>
+    
+    <p class="dim files">src/archive.mjs · src/pool.mjs</p>
+  </div>
+  <div class="card" id="W9">
+    <div class="card-head">
+      <span class="wave-id">W9</span>
+      <h3>Concurrent page + asset fetching (ebooks/magazines)</h3>
+      <span class="badge good">merged</span>
+      <span class="dim area">library · wall-clock</span>
+    </div>
+    <p class="change">Pages fetch+decode 4 at a time, then assets 4 at a time (both were serial — a 300-page magazine was 300 round trips). pageEntries stay in spine order for EPUB assembly; non-200 assets still log-and-skip; first page error rejects the loan.</p>
+    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>network pattern, 120 req × 25 ms</td><td class="num">3202 ms</td><td class="num"><b class="good">834 ms</b> <span class="dim">(74% less, 3.84×)</span></td></tr><tr><td>300-page magazine wait @80 ms RTT (model)</td><td class="num">24000 ms</td><td class="num"><b class="good">6500 ms</b> <span class="dim">(73% less, 3.69×)</span></td></tr></table>
+    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>In-flight page/asset bodies raise steady-state RAM by the concurrency factor (bounded, a few MB)</li><li>Page logs now report decoded (completed) pages so numbers stay truthful under interleaving</li><li>Also removed: dead width variable in archive-read step 4</li></ul>
+    
+    <p class="dim files">src/archive-read.mjs · src/pool.mjs</p>
+  </div>
+  <div class="card" id="W10">
+    <div class="card-head">
+      <span class="wave-id">W10</span>
+      <h3>CLI lazy command loading</h3>
+      <span class="badge bad">measured, rejected</span>
+      <span class="dim area">interface · startup</span>
+    </div>
+    <p class="change">Considered splitting bin/libby.mjs imports per command. Measured first: the full import graph costs ~9 ms over the bare Node floor (36.4 vs 27.3 ms for libby help).</p>
+    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>libby help startup</td><td class="num">36.4 ms</td><td class="num"><b class="warn">36.4 ms</b> <span class="dim">(+0%)</span></td></tr></table>
+    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>Rejected: ≤9 ms upside is invisible next to process spawn cost; dynamic imports would move load errors from startup to command time. Recorded so nobody re-litigates it.</li></ul>
+    
+    <p class="dim files">bin/libby.mjs</p>
+  </div>
+  <div class="card" id="W11">
+    <div class="card-head">
+      <span class="wave-id">W11</span>
+      <h3>Regression + tradeoff-pinning test wave</h3>
+      <span class="badge good">merged</span>
+      <span class="dim area">all · correctness</span>
+    </div>
+    <p class="change">Test suite grew 28 → 52. New: pooled-HTTP properties (socket reuse counted server-side, hung-socket timeout, 12-over-8 drain), downloadPart over pooled connections (redirect, exact bytes + sha256, truncated-body rejection with .part cleanup), EPUB spec validity via unzip -t, store/deflate method pins, stored-entry CRC pin, size-tradeoff pins (text still compresses &lt;40%, stored media adds ≤1 KB overhead), manifest byte-identity vs the vendored sequential reference, and a proper fail-fast pin for mapLimit (the original lane test passed only by timing accident — the bug it masked was real and is now fixed).</p>
+    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>tests</td><td class="num">28</td><td class="num"><b class="good">52</b> <span class="dim">(-86% more, 0.54×)</span></td></tr></table>
+    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>The EPUB size pins encode this campaign's CPU-vs-storage choices: if a future change re-inflates stored media or stops compressing text, the suite fails with the tradeoff in the message</li></ul>
+    
+    <p class="dim files">test/http.test.mjs · test/epub-integrity.test.mjs · test/manifest-ref.test.mjs · test/pool.test.mjs · test/helpers/sim-server.mjs</p>
+  </div>
+
+<h2>Baseline measurements (code at be863fd (main))</h2>
+<p class="dim">From <code>perf/results-baseline.json</code> — Apple M4, numbers are medians. A same-code rerun agrees within noise.</p>
+<table><tr><td>crc32_4mb (JS vs native zlib)</td><td class="num">7.77</td><td class="num">0.11</td></tr><tr><td>zip_assembly (13 MB synthetic EPUB)</td><td class="num">188.74</td><td class="num">108</td><td class="num">12.7</td></tr><tr><td>deflate_1mb_text</td><td class="num">12.02</td><td class="num">5.68</td><td class="num">0.09</td><td class="num">0.09</td></tr><tr><td>deflate_1mb_jpegish</td><td class="num">14.45</td><td class="num">14.44</td><td class="num">1</td></tr><tr><td>cfc1_decode_2_8mb_blob</td><td class="num">65</td></tr><tr><td>manifest_hash_50mb</td><td class="num">23.98</td></tr><tr><td>cli_startup_help</td><td class="num">36.4</td><td class="num">27.3</td></tr><tr><td>net_reuse_30_gets_loopback</td><td class="num">82</td><td class="num">30</td></tr><tr><td>net_concurrency_120req_25ms</td><td class="num">3202</td></tr></table>
+
+<h2>How to adopt</h2>
+<p>Everything lives on branch <code>perf-trial-20260906-030748</code> (hub), merged from lane branches <code>-cpu</code> and <code>-net</code>; each wave is an independent commit so any piece can be adopted or dropped alone. <code>main</code> is untouched.</p><p>To adopt everything: <code>git merge perf-trial-20260906-030748</code> from main (fast-forward). package.json engines is now <code>&gt;=20.15</code> (zlib.crc32).</p><p>Behavioral deltas to be aware of: EPUB bytes differ from baseline by design (stored media, level-6 text) but remain spec-valid and ~0.2% smaller; page/asset log lines now report completions rather than starts; anything else is byte-identical (manifests, decoded content).</p><p>Reproducible: <code>node --test</code> (52), <code>node --expose-gc perf/bench.mjs</code>, <code>node perf/net-sim.mjs src current</code>. Lane notes: perf-notes-cpu.md / perf-notes-net.md in the respective worktrees.</p>
+
+<h2>Campaign log</h2>
+<table><tr><td class="dim">03:48</td><td>Network patterns measured against local latency server: reuse 30 conns → ≤1 (82→41 ms loopback), concurrency 3.84× (3202→834 ms). Report finalized.</td></tr><tr><td class="dim">03:44</td><td>Regression + tradeoff test wave (W11): suite 28 → 52, all green. Local-TLS fixture server added (test/helpers/sim-server.mjs).</td></tr><tr><td class="dim">03:31</td><td>CPU lane complete (receipt: zip 189→5 ms fresh-process, cfc1 60→8.6 ms, manifest identical). Both lanes merged into hub; engines bumped to &gt;=20.15; 39/39 tests green; merged bench: zip 27×, RSS −26%, EPUB 0.2% smaller.</td></tr><tr><td class="dim">03:25</td><td>Subagent limit reduced to 1: net lane taken over by coordinator after its first 2 commits; mapLimit fail-fast bug found in review and fixed with a proper pinning test.</td></tr><tr><td class="dim">03:14</td><td>Baseline measured. W10 (CLI lazy loading) measured and rejected — ~9 ms ceiling. Lanes dispatched: CPU (W1–W6) and network (W7–W9).</td></tr><tr><td class="dim">03:12</td><td>Bench harness written (perf/bench.mjs, zip-one.mjs, gen.mjs); baseline snapshot captured; suite green at base (28 tests).</td></tr><tr><td class="dim">03:07</td><td>Trial opened: worktrees + branches perf-trial-20260906-030748{,-cpu,-net} created from be863fd.</td></tr></table>
+
+<footer>Auto-generated by <code>perf/render.mjs</code> from <code>perf/report-data.json</code> · trial branches <code>perf-trial-20260906-030748*</code> · report last rendered 2026-09-06 03:48</footer>
+</main>
+</body>
+</html>

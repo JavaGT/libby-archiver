@@ -12,7 +12,10 @@ const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').
 const x100 = (v) => (typeof v === 'number' ? (Math.round(v * 100) / 100).toString() : esc(v));
 
 function metric(before, after, unit, dir = 'lower') {
-  if (before == null || after == null) return '—';
+  // Non-numeric "after" (e.g. "reused (≤1)") is descriptive — print it plainly.
+  if (before == null || after == null || typeof after !== 'number' || typeof before !== 'number') {
+    return `<b>${x100(after)}${esc(unit ?? '')}</b>`;
+  }
   const ratio = before / after;
   const better = dir === 'lower' ? after < before : after > before;
   const pct = before ? Math.round(((before - after) / before) * 100) : 0;
