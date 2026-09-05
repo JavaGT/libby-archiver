@@ -205,6 +205,8 @@ lower-level pieces are exported too: `openLoan`, `fetchOpenbook`, `decodeOpenboo
   To find out which contract moved, save the player page from your browser (right-click → Save,
   or devtools) and run `libby probe saved-page.html` — add `--buid <buid>` (the `dewey-<buid>`
   part of the listen host) to also check the scramble.
+- A field-by-field reference of every raw payload we receive, with confidence ratings per
+  property, lives in [`docs/raw-payloads.md`](docs/raw-payloads.md).
 
 ## Credits
 
