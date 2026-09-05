@@ -59,8 +59,11 @@ export async function archiveReadable(ctx, loan, outDir) {
 
   // 2. read session + embedded openbook -> spine of page components
   log('   decoding openbook...');
-  const { openbook, web, cookie } = await fetchOpenbook(passport, { insecureTLS: cfg.insecureTLS });
+  const { openbook, extra, web, cookie } = await fetchOpenbook(passport, { insecureTLS: cfg.insecureTLS });
   writeJson(path.join(bookDir, 'openbook.json'), openbook);
+  if (extra && Object.keys(extra).length) {
+    writeJson(path.join(bookDir, 'openbook-extra.json'), extra);
+  }
   const spine = extractSpine(openbook, web);
   if (!spine.length) throw new Error('decoded openbook had no spine pages');
   const fixedLayout = (openbook.spine ?? []).some((p) => p['rendition-layout'] === 'pre-paginated');

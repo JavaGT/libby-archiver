@@ -95,7 +95,7 @@ base64 → UTF-8 → JSON. **We keep only the payload's `.b` key** (see limitati
 | `nav.toc[]` | array of `{ title, path }` (below) | Chapter/page TOC. | very high |
 | `-odread-cmpt-params[]` | string[] | Signed per-spine-position query params required to download parts. | high |
 | `-odread-buid` | string | Book uid; used as the EPUB identifier. | medium |
-| *siblings of `.b`* | unknown | LibbyRip's captures show the decode context also yields `objects.spool.components` (MP3 URL crypto), `objects.reader…components`, and a `root` XML document (cover reference). We keep **only** `.b` — these siblings are not archived. | medium (their existence), low (exact shapes) |
+| *siblings of `.b`* | unknown | LibbyRip's captures show the decode context also yields `objects.spool.components` (MP3 URL crypto), `objects.reader…components`, and a `root` XML document (cover reference). **Archived verbatim to `openbook-extra.json` whenever present**; shapes undocumented. | medium (their existence), low (exact shapes) |
 
 ### `spine[]` entry
 
@@ -168,8 +168,8 @@ equivalence pinned by tests + drift canaries).
   `ETag`, `Last-Modified`): signed URLs expire with the loan, so archival value is
   low. Byte size *is* enforced per part (`-odread-file-bytes` / `Content-Length`).
 - **`/chip/sync` account payload** (§2): only per-loan records survive.
-- **Openbook siblings of `.b`** (§5): kept out of `openbook.json` by design of the
-  decoder; flagged as the one place real data could be missed.
+- ~~Openbook siblings of `.b`~~ — now captured verbatim to `openbook-extra.json`
+  whenever the payload carries them (common case: file absent).
 
 ## 10. Drift
 

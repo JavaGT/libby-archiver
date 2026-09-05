@@ -117,6 +117,8 @@ if (!sim) {
       assert.equal(meta.language, 'en');
 
       assert.ok(fs.existsSync(path.join(bookDir, 'README.txt')));
+      assert.ok(!fs.existsSync(path.join(bookDir, 'openbook-extra.json')),
+        'no extra sidecar when the payload carries no siblings');
       assert.ok(fs.existsSync(path.join(bookDir, 'thunder.json')));
       assertManifestCovers(bookDir); // every file, README.txt included
     } finally {

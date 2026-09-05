@@ -50,10 +50,14 @@ export async function archiveAudiobook(ctx, loan, outDir) {
 
   // 2. establish listen session, decode the embedded openbook -> spine
   log('   decoding openbook...');
-  const { openbook, web, cookie } = await fetchOpenbook(passport, {
+  const { openbook, extra, web, cookie } = await fetchOpenbook(passport, {
     insecureTLS: cfg.insecureTLS,
   });
   writeJson(path.join(bookDir, 'openbook.json'), openbook);
+  if (extra && Object.keys(extra).length) {
+    // decoded payload siblings we do not interpret — archived verbatim, losslessly
+    writeJson(path.join(bookDir, 'openbook-extra.json'), extra);
+  }
   const spine = extractSpine(openbook, web);
   if (!spine.length) throw new Error('decoded openbook had no spine parts');
   log(`   ${spine.length} spine part(s)`);

@@ -248,7 +248,16 @@ export function probeEData(playerHtml, buid) {
 
   stages.push({ stage: 'openbook-shape', ok: !!doc.b, detail: doc.b ? undefined : 'decoded openbook missing `.b`' });
   if (!doc.b) return { ok: false, stages };
-  return { ok: true, stages, openbook: doc.b };
+  // Preserve payload keys we do not interpret (LibbyRip's captures show siblings
+  // such as spool/reader objects beside `.b`) so archiving stays lossless.
+  const extra = { ...doc };
+  delete extra.b;
+  return {
+    ok: true,
+    stages,
+    openbook: doc.b,
+    ...(Object.keys(extra).length ? { extra } : {}),
+  };
 }
 
 /**
@@ -256,6 +265,15 @@ export function probeEData(playerHtml, buid) {
  * Stages and their drift hints: see probeEData.
  */
 export function decodeOpenbook(playerHtml, buid) {
+  return decodeOpenbookFull(playerHtml, buid).openbook;
+}
+
+/**
+ * Like decodeOpenbook, but also returns the decoded payload's sibling keys
+ * (`extra`) — payload data we do not interpret, kept so nothing upstream of
+ * `.b` is lost.
+ */
+export function decodeOpenbookFull(playerHtml, buid) {
   const r = probeEData(playerHtml, buid);
   const failed = r.stages.find((s) => !s.ok);
   if (!r.ok) {
@@ -266,12 +284,12 @@ export function decodeOpenbook(playerHtml, buid) {
     }
     throw new Error(`${failed.stage} failed: ${failed.detail}`);
   }
-  return r.openbook;
+  return { openbook: r.openbook, extra: r.extra };
 }
 
 /**
  * Establish the listen-host session and fetch the decoded openbook.
- * @returns {Promise<{ openbook: object, web: string, buid: string, cookie: string }>}
+ * @returns {Promise<{ openbook: object, extra: object | undefined, web: string, buid: string, cookie: string }>}
  */
 export async function fetchOpenbook(passport, { insecureTLS = false, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
   const web = passport?.urls?.web; // https://dewey-<buid>.listen.libbyapp.com/
@@ -286,8 +304,8 @@ export async function fetchOpenbook(passport, { insecureTLS = false, timeoutMs =
   // 2. Fetch the player page (carries window.eData).
   const res = await jar.request(host, 'GET', '/', { headers: { Accept: 'text/html' } });
   if (res.status !== 200) throw new Error(`player page -> ${res.status}`);
-  const openbook = decodeOpenbook(res.body.toString('utf8'), buid);
-  return { openbook, web, buid, cookie: jar.cookieFor(host) };
+  const { openbook, extra } = decodeOpenbookFull(res.body.toString('utf8'), buid);
+  return { openbook, extra, web, buid, cookie: jar.cookieFor(host) };
 }
 
 /**

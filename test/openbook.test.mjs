@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { decodeOpenbook, descramble, extractSpine, openKindFor, probeEData } from '../src/openbook.mjs';
+import { decodeOpenbook, decodeOpenbookFull, descramble, extractSpine, openKindFor, probeEData } from '../src/openbook.mjs';
 
 // Forward (encode) direction of bifocal's descramble: per position a with key digit d,
 // find the printable char whose scrambled output is the target char. The mapping is
@@ -178,4 +178,18 @@ test('probeEData reports per-stage health and names the drifted stage', () => {
   const noMarker = probeEData('<html>nothing here</html>', BUID);
   assert.equal(noMarker.ok, false);
   assert.equal(noMarker.stages[0].stage, 'eData-marker');
+});
+
+test('decodeOpenbookFull preserves payload siblings beside `.b` (lossless capture)', () => {
+  const doc = { b: { ok: 1 }, objects: { spool: { components: [1, 2] } }, root: '<xml/>' };
+  const { openbook, extra } = decodeOpenbookFull(page(encodedFixture(doc)), BUID);
+  assert.deepEqual(openbook, doc.b);
+  assert.deepEqual(extra, { objects: doc.objects, root: doc.root });
+  // probe surface reports the same
+  const probe = probeEData(page(encodedFixture(doc)), BUID);
+  assert.deepEqual(probe.extra, { objects: doc.objects, root: doc.root });
+});
+
+test('payloads without siblings carry no extra', () => {
+  assert.equal(decodeOpenbookFull(page(encodedFixture({ b: { ok: 1 } })), BUID).extra, undefined);
 });
