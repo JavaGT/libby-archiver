@@ -14,7 +14,7 @@
     "node": "v26.7.0",
     "cpu": "Apple M4"
   },
-  "rendered": "2026-09-06 10:46",
+  "rendered": "2026-09-06 11:10",
   "tldr": [
     {
       "value": "27×",
@@ -610,6 +610,27 @@
         "If the owner ever wants it: make the loan-level concurrency an opt-in flag, default 1, and validate against a real shelf"
       ],
       "files": []
+    },
+    {
+      "id": "W24",
+      "name": "Deflate option tuning (level / memLevel / strategy)",
+      "area": "library · CPU vs storage",
+      "status": "rejected",
+      "change": "Grid-probed zlib options on the 1 MB XHTML corpus (levels 5–7 × memLevel 8–9 × default/filtered strategy). The adopted level-6 default sits on the knee of the curve: level 5 is 1.8× faster (8.4→4.7 ms/MB) but +12% on text-entry size (~+0.5–1% of a whole EPUB) for only ~2–3 ms absolute saving per book; level 7 buys 1.5% smaller for +46% time.",
+      "metrics": [
+        {
+          "name": "level 5 / memLevel 8",
+          "before": null,
+          "after": null,
+          "unit": "",
+          "direction": "lower"
+        }
+      ],
+      "tradeoffs": [
+        "Not adopted: the absolute time at stake per book is now milliseconds after W2–W4; the storage regression outweighs it",
+        "Numbers preserved in the campaign log for whoever revisits compression"
+      ],
+      "files": []
     }
   ],
   "baseline": {
@@ -720,6 +741,10 @@
     {
       "t": "10:46",
       "entry": "Closing soak: 10 consecutive full-suite runs, 0 failures (plus the earlier unreproduced transient — 15+ clean runs total since). W21 (cross-loan parallelism) considered and rejected: OverDrive rate-limit risk, not validable offline. Campaign closed at 10:46, ahead of the 12:00 stop."
+    },
+    {
+      "t": "11:08",
+      "entry": "Wave 5 in flight: W22 (getTitle parallel round trips, 69/69 in hub) + W23 loop-implementation showdown (subagent). Deflate option grid probed — level 6 confirmed on the knee of the curve (W24 rejected)."
     }
   ]
 }
