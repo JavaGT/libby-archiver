@@ -22,10 +22,14 @@ independent evidence.
 
 **Live captures (2026-09-06):** the Thunder catalog is public, so §6–§8 (media
 records, availability, search, characteristics) were verified against real
-Auckland Libraries responses — 3 full media records, ~68 search-item records
-(21-key→51-key superset), an availability batch, and stargazer characteristics.
-Raw captures: `sample-data/thunder-catalog/` (gitignored). The loan-level payloads
-(§2–§4) still need a captcha-passed card link to sample live.
+Auckland Libraries responses — 3 full media records + 68 search-item records
+(individual records carry 44–55 top-level keys; the union is 56), an availability
+batch, and stargazer characteristics — then **field-by-field audited**: every key
+in the captures is accounted for in §6–§8 below. Raw captures:
+`sample-data/thunder-catalog/` (gitignored). The loan-level payloads (§2–§4) need
+a linked card on this machine (`libby init`, then `node perf/collect-payloads.mjs`
+— the collector captures sync, loan, passport, player page, and openbook in one
+run without downloading content).
 
 Persistence rule: every payload below is stored **verbatim and complete** in a
 sidecar (`passport.json`, `openbook.json`, `loan.json`, `thunder.json`) — so any
@@ -102,7 +106,10 @@ base64 → UTF-8 → JSON. **We keep only the payload's `.b` key** (see limitati
 | `nav.toc[]` | array of `{ title, path }` (below) | Chapter/page TOC. | very high |
 | `-odread-cmpt-params[]` | string[] | Signed per-spine-position query params required to download parts. | high |
 | `-odread-buid` | string | Book uid; used as the EPUB identifier. | medium |
-| *siblings of `.b`* | unknown | LibbyRip's captures show the decode context also yields `objects.spool.components` (MP3 URL crypto), `objects.reader…components`, and a `root` XML document (cover reference). **Archived verbatim to `openbook-extra.json` whenever present**; shapes undocumented. | medium (their existence), low (exact shapes) |
+| *siblings of `.b`* | object tree | Shapes below, from LibbyRip's live-page code. **Archived verbatim to `openbook-extra.json` whenever present.** Note LibbyRip's comment: Libby strips the MP3-URL crypto context *out of* the book info before shipping it — only `-odread-cmpt-params` inside `.b` survives. | medium (existence), high (keys below) |
+| `objects.spool.components[]` | `{ meta: { path, -odread-spine-position, audio-duration, -odread-file-bytes, media-type, audio-bitrate }, spinePosition }` | Audiobook part list mirroring `.b.spine[]`; download URL = `<web-host>/<meta.path>?<cmptParams[spinePosition]>`. | high (keys, LibbyRip `getUrls`) |
+| `objects.reader._.context.spine._.components[]` | page components; optional `block.behavior` (LibbyRip filters `behavior == "hidden"`) | Ebook page list for read-layout titles. | medium (shape from single consumer) |
+| `root` | XML document; `<image href>` is the cover URL | Package/root XML (LibbyRip queries `root.querySelector("image").getAttribute("href")`). | high (cover usage), medium (full schema) |
 
 ### `spine[]` entry
 
@@ -129,8 +136,9 @@ base64 → UTF-8 → JSON. **We keep only the payload's `.b` key** (see limitati
 
 Catalog-side metadata, independent of the loan. Fetch failure is tolerated
 (`null`) and never fails an archive. **Live-verified 2026-09-06 against Auckland
-Libraries: a full record carries 51 top-level keys** (grouped below). Search
-items (`/media?query=…`) carry the identical 51-key shape.
+Libraries and field-audited**: 71 records (3 media + 68 search items) carry
+44–55 top-level keys each; the union — 56 keys, every one listed below — is the
+complete observed shape.
 
 ### Identity & catalog text
 
@@ -146,7 +154,12 @@ items (`/media?query=…`) carry the identical 51-key shape.
 | `languages[]` | `{ id, name }` | Languages. | very high |
 | `publishDate` / `publishDateText` / `estimatedReleaseDate` | string/number | Publication / release dates. | very high (keys); medium (exact formats per field) |
 | `imprint` | `{ id, name }` | Imprint. | very high (keys) |
-| `starRating` / `starRatingCount` | number | Aggregate community rating. | very high (keys) |
+| `publisher` / `publisherAccount` | `{ id, name }` | Publisher and its catalog account (e.g. Random House / Penguin Random House UK). Present in **all** 71 captured records. | very high |
+| `series` | string (11/71 records) | Plain-text series name, e.g. `"The Midnight World"`. | very high |
+| `detailedSeries` | `{ seriesId, seriesName, readingOrder, rank }` (11/71) | Structured series: numeric id, `readingOrder` is a **string** (`"1"`), `rank` a number. | very high (keys); medium (rank semantics) |
+| `edition` | string (27/71) | Edition, e.g. `"4"`. | very high |
+| `awards` | `[{ id, description, source }]` (6/71, search items only) | Award entries, e.g. `"Libby Award Finalist"` / source `"OverDrive"`. | very high (keys) |
+| `starRating` / `starRatingCount` | number | Aggregate community rating. **Optional** — present in 40/71 records. | very high (keys) |
 | `ratings` | `{ maturityLevel, naughtyScore }` | Internal content ratings. | medium (semantics inferred) |
 | `reviewCounts` | `{ premium, publisherSupplier }` | Review counts by source. | medium (semantics inferred) |
 
@@ -155,7 +168,7 @@ items (`/media?query=…`) carry the identical 51-key shape.
 | Property | Shape | Meaning | Conf. |
 |---|---|---|---|
 | `subjects[]` | `{ id, name }` | Subject tags → `metadata.json.subjects`. | very high |
-| `levels[]` | `{ id, name, value }` | Reading/interest levels. | very high (keys); low (value scale) |
+| `levels[]` | `{ id, name, value, high?, low? }` (e.g. `{ id: "atos", name: "ATOS", value: "4.7" }`) | Reading/interest levels. | very high (keys); low (value/high/low scale) |
 | `bisac[]` / `bisacCodes` | `{ code, description }` / string[] | BISAC subject codes. | very high (keys) |
 | `classifications` | object (empty in captures) | Classification block; rarely populated. | low |
 
@@ -163,9 +176,10 @@ items (`/media?query=…`) carry the identical 51-key shape.
 
 | Property | Shape | Meaning | Conf. |
 |---|---|---|---|
-| `formats[]` | array, one per offered format | Keys observed: `id`, `name`, `isbn`, `identifiers[]`, `fulfillmentType`, `hasAudioSynchronizedText`, `isBundleParent`, `bundledContent`, `onSaleDateUtc`, `rights`, `sample`. | very high (keys); medium (`rights`, `bundledContent` semantics) |
+| `formats[]` | array, one per offered format (183 observed) | Keys observed: `id`, `name`, `isbn` (142/183), `identifiers[]` (always), `fulfillmentType` (e.g. `bifocal`), `hasAudioSynchronizedText`, `isBundleParent`, `bundledContent` (always `[]` in captures), `onSaleDateUtc`, `rights` (always `[]` in captures), `sample` (87/183), `fileSize` bytes (98/183), `duration` **string** `"11:40:06"` (34/183, audiobooks), `partCount` (17/183), `accessibilityStatements` (41/183). | very high (keys); medium (`rights`, `bundledContent`, `accessibilityStatements` semantics) |
 | `formats[].identifiers[]` | `{ type: "ISBN", value }` | Isbns → `metadata.json.isbns`. | very high |
-| `covers{}` | `cover150Wide` / `cover300Wide` / `cover510Wide`, each `{ href, … }` | Cover variants; widest wins. | very high |
+| `formats[].accessibilityStatements` | `{ waysOfReading[], conformance[], navigation[] }` | Accessibility conformance metadata (e.g. `"ModifiableDisplay"`, `"MeetsStandards"`). | medium |
+| `covers{}` | `cover150Wide` / `cover300Wide` / `cover510Wide` — present in **all** records | Each entry: `{ href, width, height, primaryColor: { hex, rgb: { red, green, blue } }, isPlaceholderImage }`. `cover510Wide.href` serves `ImageType-100` (the original asset). | very high |
 | `sample` | `{ href }` | Excerpt link. | very high |
 | `constraints` | `{ isDisneyEulaRequired }` | Licensing constraints. | medium |
 | `contentAccessLevels` | number | Access-level bitmask. | low |
@@ -179,17 +193,20 @@ items (`/media?query=…`) carry the identical 51-key shape.
 
 ## 7. Availability record — `POST thunder…/media/availability` (ephemeral; `libby avail`)
 
-Batch response: `{ items: [...] }` — live-verified 2026-09-06: each item carries
-**23 keys** (the availability subset above, minus catalog text, plus
-`estimatedReleaseDate`, `luckyDayOwnedCopies`, `isOwned`, `visitorEligible`,
-`juvenileEligible`, `youngAdultEligible`, `contentAccessLevels`, `formats`). All
-keys very high (existence); per-flag semantics as noted in §6.
+Batch response: `{ items: [...] }` — live-verified 2026-09-06: the **union across
+items is 23 keys** (individual items carry 17–23 depending on state) — the
+availability subset of §6, plus `estimatedReleaseDate`, `luckyDayOwnedCopies`,
+`isOwned`, `visitorEligible`, `juvenileEligible`, `youngAdultEligible`,
+`contentAccessLevels`, and `formats[]` (full format objects as in §6). All keys
+very high (existence); per-flag semantics as noted in §6.
 
 ## 7b. Catalog search response — `GET thunder…/media?query=…` (ephemeral; `libby search`)
 
 Top level: `facets`, `items`, `links`, `queryKeys`, `sortOptions`, `totalItems`,
-`totalItemsText`. **`items[]` are full 51-key media records** (identical to §6) —
-so `libby search` already receives everything §6 documents.
+`totalItemsText` (all verified). **`items[]` are full media records of the §6
+family** — 44–55 top-level keys each (sparse per title, e.g. `awards` appeared
+only here, `starRating` in 40/71) — so `libby search` already receives everything
+§6 documents.
 
 ## 7c. Stargazer characteristics — `GET stargazer…/{lib}/characteristics/title/{id}`
 
@@ -198,8 +215,8 @@ Live-verified shape:
 | Property | Shape | Meaning | Conf. |
 |---|---|---|---|
 | `title_id` | string | Echoes the requested id. | very high |
-| `matches` | number | How many characteristic entries matched. | very high |
-| `characteristics` | nested `{ category: { subkey: { emoji: word } } }` — e.g. `fiction → adults → { "🛸": "cosmic", … }` | Emoji-keyed tag tree; `getCharacteristics` flattens it to the word strings. | very high (shape), high (semantics) |
+| `matches` | number | **Not** the tag count — a live body with `matches: 0` still returned a fully populated `characteristics` tree. Exact semantics unclear. | medium |
+| `characteristics` | nested `{ category: { subkey: { emoji: word } } }` — e.g. `fiction → adults → { "🛸": "cosmic", … }` | Emoji-keyed tag tree; `getCharacteristics` flattens it to the word strings. Present and populated even when `matches` is 0. | very high (shape), high (semantics) |
 
 ## 8. Read-host page — `parent.__bif_cfc1(self, '<blob>')` → `pages/` + EPUB
 

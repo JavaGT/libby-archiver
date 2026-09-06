@@ -14,7 +14,8 @@ import { authenticate } from '../src/auth.mjs';
 import { sync } from '../src/loans.mjs';
 import { openLoan, fetchOpenbook, probeEData } from '../src/openbook.mjs';
 import { fetchThunderMedia } from '../src/metadata.mjs';
-import { loadConfig, generatorInfo } from '../src/config.mjs';
+import { loadConfig } from '../src/config.mjs';
+import { generatorInfo } from '../src/util.mjs';
 
 const arg = (name, def) => {
   const i = process.argv.indexOf(`--${name}`);
