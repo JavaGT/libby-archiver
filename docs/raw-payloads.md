@@ -20,16 +20,17 @@ deterministic e2e/sim fixtures, and community knowledge of the Thunder catalog A
 (`x-client-id: dewey`). Test fixtures mirror our assumptions and are **not**
 independent evidence.
 
-**Live captures (2026-09-06):** the Thunder catalog is public, so §6–§8 (media
-records, availability, search, characteristics) were verified against real
-Auckland Libraries responses — 3 full media records + 68 search-item records
-(individual records carry 44–55 top-level keys; the union is 56), an availability
-batch, and stargazer characteristics — then **field-by-field audited**: every key
-in the captures is accounted for in §6–§8 below. Raw captures:
-`sample-data/thunder-catalog/` (gitignored). The loan-level payloads (§2–§4) need
-a linked card on this machine (`libby init`, then `node perf/collect-payloads.mjs`
-— the collector captures sync, loan, passport, player page, and openbook in one
-run without downloading content).
+**Live captures (2026-09-06/07):** the Thunder catalog (§6–§8) was verified against
+real Auckland Libraries responses (3 full media records + 68 search items, an
+availability batch, stargazer characteristics), then **field-by-field audited** —
+every key in the captures is accounted for below. The loan-level payloads
+(§2–§5) were live-verified on 2026-09-07 the same way: one magazine loan captured
+end-to-end (sync, loan, passport, player page, openbook + siblings, thunder),
+with the `probeEData` drift canary passing **all four stages** on the real player
+page. Card linking from this machine's datacenter IP triggers OverDrive's
+`captcha_required`; the collector works after linking once in a real browser
+(`perf/collect-payloads.mjs` reuses the cached session — see §1). Raw captures:
+`sample-data/` (gitignored; contains account data).
 
 Persistence rule: every payload below is stored **verbatim and complete** in a
 sidecar (`passport.json`, `openbook.json`, `loan.json`, `thunder.json`) — so any
@@ -49,81 +50,99 @@ it for the machine only).
 | `chip.cards` | array \| null | Must be **non-null** for `open` to succeed (`missing_chip` otherwise). Linking a card does not update an existing token — a re-mint is required. | very high (empirical, see `src/auth.mjs` header, discovered 2026-07-08) |
 | `chip.prbn` | `"v"` \| `"i"` | Must be `"v"`; `auth/link` alone yields `"i"` which `open` rejects — hence the clone dance. | high (empirical, same source) |
 | error `result` | string, e.g. `missing_chip`, `whoa`, `client_upgrade_required` | OverDrive's failure reason, surfaced verbatim in errors. | very high |
+| error `captcha_required` (HTTP 401, upstream `CaptchaRequired` from service `OPAS`) | — | **`/auth/link` demands a reCAPTCHA when the request comes from an IP OverDrive's risk engine distrusts** (observed 2026-09-07 from a NZ datacenter ASN; residential connections link without one). The web client routes the same gate through `sentry.libbyapp.com/auth/captcha` (reCAPTCHA v2). Linking once in a real browser and copying the cached session (`~/.config/libby-archiver/session.json`) bridges the CLI past it — the session is per (library, card) and reused while the JWT is unexpired. | very high (observed) |
 
 ## 2. `/chip/sync` account payload (ephemeral — not persisted)
 
-Top-level shape: `{ loans: [...], cards: [...], … }`. Only `loans[]` is consumed;
-**the account payload itself is discarded** (see §10 limitations).
+Top-level shape (live-verified 2026-09-07): `{ loans, cards, holds, result,
+stashes, summary }`. Only `loans[]` is consumed; **the account payload itself is
+discarded** (see §9 limitations).
 
 | Property | Shape | Meaning | Conf. |
 |---|---|---|---|
 | `loans` | array of loan records (§3) | Everything checked out on the card. | very high |
-| `cards` | array | Card/library context for the account. Not read today. | medium (existence read-verified by `sync()` returning it; contents unenumerated) |
-| *other siblings* | unknown | The sync response may carry more (settings, holds…). Untouched. | low |
+| `cards` | array of card records | Card/library context. Live record keys (20): `accounts, advantageKey, allowReadingHistorySince, authorizeDate, canPlaceHolds, canRecommendTitles, cardId, cardName, contentMask, counts, createDate, ilsName, isSessionUser, isVisitingCard, lendingPeriods, library, limits, publicLibraryMaturity, puid, username`. | very high (keys) |
+| `holds` | array of hold records (56 keys each) | Titles on hold. Notable beyond §6 availability keys: `autoCheckoutFlag`, `autoRenewFlag`, `holdListPosition`, `placedDate`, `suspensionEnd`, `suspensionFlag`, `redeliveriesAutomatedCount`, `redeliveriesRequestedCount`, `otherFormats`. | very high (keys) |
+| `result` | `"synchronized"` | Sync outcome string. | very high |
+| `stashes` | object (empty in capture) | Saved-search/UI stash container. | medium (semantics) |
+| `summary` | `{ [cardId]: { cards, loans, holds } }` — values like `"done"` | Per-card sync status rollup. | very high (shape), medium (value set) |
 
 ## 3. Loan record → `loan.json` (secret, 0600)
 
-One entry of `loans[]`. **Stored raw and complete** — the table lists properties
-we have identified; anything undocumented still survives in the sidecar.
+One entry of `loans[]`. **Stored raw and complete** — live-verified 2026-09-07
+with a full key enumeration (49 keys on a magazine loan, grouped below); anything
+undocumented still survives in the sidecar.
 
 | Property | Shape | Meaning | Conf. |
 |---|---|---|---|
 | `id` | string | Title/reserve id — the id used by every command. | very high |
-| `cardId` | string | Card the loan is on. | very high |
-| `title` / `subtitle` | string | Display title / subtitle. | very high |
-| `firstCreatorName` | string | Primary author. | very high |
+| `cardId` / `websiteId` / `privateAccountId` | string | Card, library site, and hidden account ids the loan belongs to. | very high (keys) |
+| `title` / `subtitle` / `sortTitle` / `series` / `edition` | string | Display text (mirrors §6 fields). | very high |
+| `firstCreatorName` / `firstCreatorId` | string | Primary author. | very high |
 | `type` | `{ id: "audiobook" \| "ebook" \| "magazine" \| … }` | Routes to the right archiver; unknown ids stay unknown. | very high |
-| `expires` | ISO date string | Loan expiry. | very high |
-| `covers.cover510Wide / cover300Wide / cover150Wide` | `{ href }` | Cover variants; largest wins for download. | high |
-| `overDriveFormat.id` | string | Format discriminator. | medium |
-| `checkoutId` | string | Printed by `borrow`; identifies the checkout. | high |
-| *undocumented fields* | — | Survive verbatim in `loan.json`. | n/a |
+| `overDriveFormat` / `readiverseFormat` / `formats` / `otherFormats` / `bundledContent` / `bundledContentTitleIds` | format objects/arrays | Format discriminators and bundle membership (`overDriveFormat.id` e.g. `magazine-overdrive`). | very high (keys) |
+| `expires` / `expireDate` / `checkoutDate` / `checkoutId` / `loanStamp` / `renewableOn` | dates/string | Checkout lifecycle (`checkoutId` printed by `borrow`; `renewableOn` gates renewal). | very high (keys) |
+| `covers` | cover variants `{ href, … }` | Cover images (largest wins for download). | very high |
+| `availabilityType`, `availableCopies`, `ownedCopies`, `luckyDayAvailableCopies`, `luckyDayOwnedCopies`, `holdsCount`, `holdsRatio`, `estimatedWaitDays`, `estimatedReleaseDate` | number/string | §6 availability snapshot, inlined. | very high (keys) |
+| `isHoldable`, `isAdvantageFiltered`, `isAssigned`, `isBundledChild`, `isFormatLockedIn`, `isLuckyDayCheckout`, `isOwned`, `isReturnable` | bool | Entitlement/eligibility flags. | very high (keys); low–medium (individual semantics from names) |
+| `publishDate` / `publishDateText` | string/number | Publication date (mirrors §6). | very high (keys) |
+| `publisherAccount` / `ratings` / `constraints` / `sample` / `languages` / `subjects` | §6-shaped | Catalog mirrors inside the loan record. | very high (keys) |
+| `pages` / `frequency` / `parentMagazineTitleId` / `reservedContentBundleCodeId` | number/string | Magazine-specific: page count, issue frequency, parent title linkage. | very high (keys); medium (semantics) |
+| `reserveId` | string | Alternative id echoed by Thunder. | very high (keys) |
 
 ## 4. Passport — gateway `/open/<kind>/…` response → `passport.json` (secret, 0600)
+
+Live shape (2026-09-07): four top-level keys.
 
 | Property | Shape | Meaning | Conf. |
 |---|---|---|---|
 | `urls.web` | URL — `https://dewey-<buid>.listen|.read.libbyapp.com/` | The per-loan listen/read host everything else is fetched from. | very high |
 | `message` | query string | Signed handshake parameter that establishes the host session cookie. | very high |
-| *everything else* | opaque JSON | Fulfilment details (expiry, ids). Never interpreted — stored raw. | low (schema undocumented by design) |
+| `expires` | date string | Fulfilment expiry for the open-loan grant. | very high (key), medium (semantics) |
+| `bankscope` | object | Redemption/scope context echoed by the gateway. | medium (key observed, contents opaque) |
 
 ## 5. Openbook — decoded `window.eData` → `openbook.json`
 
 The listen/read player page embeds `window.eData = [...]`; decode = join with `"`,
 descramble with the reversed-`buid` key (`shift = (a+d) % 94`, wrap `>126 → %126+32`),
-base64 → UTF-8 → JSON. **We keep only the payload's `.b` key** (see limitations, §10).
+base64 → UTF-8 → JSON. The decoded root is `{ b, t, u }` (see siblings below);
+**we keep `.b` as `openbook.json`** and archive `t`/`u` verbatim to
+`openbook-extra.json`. Live-verified 2026-09-07 against a magazine loan: `.b`
+carries **26 top-level keys**, all listed below.
 
 ### Top level
 
 | Property | Shape | Meaning | Conf. |
 |---|---|---|---|
-| `title.main` | string | Title. | very high |
-| `title.subtitle` | string | Subtitle. | high |
+| `title.main` / `title.subtitle` | string | Title / subtitle. | very high |
 | `creator[]` | `{ name, role }` — role like `author`, `narrator`, `pbl` | Creators; roles drive author/narrator/publisher extraction. | very high |
-| `description` | string **or** `{ full, short }` | Description (HTML — cleaned for metadata.json). | very high (presence); medium ({full,short} variant) |
-| `language` | string **or** string[] | Language(s). | high |
-| `spine[]` | array of spine entries (below) | Ordered parts (audiobook) / pages (read). | very high |
-| `nav.toc[]` | array of `{ title, path }` (below) | Chapter/page TOC. | very high |
-| `-odread-cmpt-params[]` | string[] | Signed per-spine-position query params required to download parts. | high |
-| `-odread-buid` | string | Book uid; used as the EPUB identifier. | medium |
-| *siblings of `.b`* | object tree | Shapes below, from LibbyRip's live-page code. **Archived verbatim to `openbook-extra.json` whenever present.** Note LibbyRip's comment: Libby strips the MP3-URL crypto context *out of* the book info before shipping it — only `-odread-cmpt-params` inside `.b` survives. | medium (existence), high (keys below) |
-| `objects.spool.components[]` | `{ meta: { path, -odread-spine-position, audio-duration, -odread-file-bytes, media-type, audio-bitrate }, spinePosition }` | Audiobook part list mirroring `.b.spine[]`; download URL = `<web-host>/<meta.path>?<cmptParams[spinePosition]>`. | high (keys, LibbyRip `getUrls`) |
-| `objects.reader._.context.spine._.components[]` | page components; optional `block.behavior` (LibbyRip filters `behavior == "hidden"`) | Ebook page list for read-layout titles. | medium (shape from single consumer) |
-| `root` | XML document; `<image href>` is the cover URL | Package/root XML (LibbyRip queries `root.querySelector("image").getAttribute("href")`). | high (cover usage), medium (full schema) |
+| `description` | `{ full, short? }` — HTML (string variant also accepted) | Description (cleaned for metadata.json). `{full}` variant live-verified. | very high |
+| `language` | string (`"en"`) or string[] | Language(s). | very high |
+| `spine[]` | array of spine entries (below) — 129 entries ↔ 129 `-odread-cmpt-params` on the live capture | Ordered parts (audiobook) / pages (read). | very high |
+| `nav` | `{ toc[], "sequence:fixed", "sequence:mixed" }` | TOC plus sequence declarations. | very high (toc); medium (sequence semantics) |
+| `-odread-cmpt-params[]` | string[] | Signed per-spine-position query params required to download parts. | very high |
+| `-odread-buid` | string | Book uid; used as the EPUB identifier. | very high |
+| `cover.front` | `{ media-type, -odread-file-bytes, -odread-width, -odread-height, -odread-aspect-ratio, -odread-color: [r,g,b], -odread-file-last-modified }` | Embedded cover manifest (asset fetched from the host; pixels not inlined). | very high |
+| `-odread-uilinks` | `{ HELPCOMPAT: url }` | UI help links. | very high (keys) |
+| `i18n-page-progression-direction` | `"ltr"` \| `"rtl"` | Reading direction. | very high |
+| `rendition-format` | `"ebook"` \| … | Rendition family (reflows vs fixed-layout). | high |
+| `-odread-anchor`, `-odread-bank-scope`, `-odread-bank-verification-token`, `-odread-bonafides-{d,m,p,s}`, `-odread-cover-color`, `-odread-cover-ratio`, `-odread-crid`, `-odread-furbish-uri`, `-odread-msg-access`, `-odread-msg-expires`, `-odread-msg-sync` | opaque strings/numbers | Fulfilment/crypto context carried beside the content (bank verification, message access tokens, cover tint). Not interpreted — but they live **inside `.b`**, so they are stored in `openbook.json` verbatim. | medium (keys), low (semantics) |
 
 ### `spine[]` entry
 
 | Property | Shape | Meaning | Conf. |
 |---|---|---|---|
 | `path` | string (may carry a `#offset` fragment on toc paths) | Content path on the host. | very high |
-| `-odread-original-path` | string | Original path; preferred for display/mapping. | high |
-| `-odread-spine-position` | number | Ordering key (matches `-odread-cmpt-params` index). | high |
-| `audio-duration` | number (seconds) | Part duration; summed into `durationSeconds`. | very high |
-| `media-type` | string, e.g. `audio/mpeg` | Part media type. | very high |
-| `-odread-file-bytes` | number | Exact byte size — verified against `Content-Length` on download. | high |
+| `-odread-original-path` | string | Original path; preferred for display/mapping. | very high |
+| `-odread-spine-position` | number | Ordering key (matches `-odread-cmpt-params` index). | very high |
+| `audio-duration` | number (seconds) | Part duration; summed into `durationSeconds` (audiobooks). | very high |
+| `media-type` | string, e.g. `application/xhtml+xml`, `audio/mpeg` | Part media type. | very high |
+| `-odread-file-bytes` | number | Exact byte size — verified against `Content-Length` on download. | very high |
+| `linear` | bool | EPUB linear flag (live-verified on magazine spine). | very high (key) |
+| `rendition-layout` | `"pre-paginated"` for magazines | Fixed-layout flag. | very high |
+| `rendition-position` | `"right"` \| … | Page position in spreads. | medium (key; semantics from names) |
+| `rendition-viewport` | `{ width, height }` | Page viewport for fixed-layout rendering. | very high |
 | `audio-bitrate` | number | Bitrate (LibbyRip reads it; we do not). | medium |
-| `rendition-layout` | `"pre-paginated"` for magazines | Fixed-layout flag. | high |
-| `rendition-viewport` | `{ width, height }` | Page viewport for fixed-layout rendering. | high |
 
 ### `nav.toc[]` entry
 
@@ -131,6 +150,21 @@ base64 → UTF-8 → JSON. **We keep only the payload's `.b` key** (see limitati
 |---|---|---|---|
 | `title` | string | Chapter/page title. | very high |
 | `path` | `"<file>#<offset>"` | TOC target; the **fragment is the chapter start time** (e.g. `0.00000-119.00000`), captured verbatim as `chapters[].offset`. | very high (existence); high (offset semantics — LibbyRip parses it identically) |
+| `pageRange` | string (magazines) | Printable page label, e.g. `"Cover"`. | very high (key) |
+| `featureImage` | asset path | TOC thumbnail asset. | very high (key) |
+
+### Root siblings of `.b` → `openbook-extra.json`
+
+Live-verified shape on a magazine loan: the decoded root is exactly
+`{ b, t, u }`.
+
+| Property | Shape | Meaning | Conf. |
+|---|---|---|---|
+| `t` | `{ codex: { title: { titleId, slug }, loan: { psnKey, slug }, library: { key, name } }, "dewey-url", spec: "V31", thunder, theme }` | App context: which loan/library/player the page belongs to. (`psnKey` = `<cardId>-<titleId>`.) Audiobook pages instead expose the player context LibbyRip sees: `objects.spool.components[]` (`{ meta: { path, -odread-spine-position, audio-duration, -odread-file-bytes, media-type, audio-bitrate }, spinePosition }`) and `objects.reader._.context.spine._.components[]` (ebook pages, `block.behavior` filtering). | very high (magazine, live); medium (audiobook side, LibbyRip) |
+| `u` | `"/?d=<base64url JSON>"` | Reader deep-link. Decoded: `{ outlet: "read", token, access, expires, theme, sync, pparam: "lib-<websiteId>", tdata: { codex… }, time, grants: ["read"], auth_url: "https://sentry.libbyapp.com/open/auth/<chipId>", buid, _c }`. | very high (shape), medium (per-field semantics) |
+
+LibbyRip's note stands: Libby strips the MP3-URL crypto context *out of* the
+book info before shipping it — only `-odread-cmpt-params` inside `.b` survives.
 
 ## 6. Thunder media record — `GET thunder…/media/{id}` → `thunder.json` (if 200)
 
@@ -230,7 +264,10 @@ equivalence pinned by tests + drift canaries).
 - **HTTP response metadata** per file (final redirected URL, `Content-Type`,
   `ETag`, `Last-Modified`): signed URLs expire with the loan, so archival value is
   low. Byte size *is* enforced per part (`-odread-file-bytes` / `Content-Length`).
-- **`/chip/sync` account payload** (§2): only per-loan records survive.
+- **`/chip/sync` account payload** (§2): only per-loan records survive as
+  sidecars; the account-level `cards`/`holds`/`summary` sections are enumerated
+  in §2 but not persisted by the archiver (use `perf/collect-payloads.mjs` for a
+  verbatim `_sync.json`).
 - ~~Openbook siblings of `.b`~~ — now captured verbatim to `openbook-extra.json`
   whenever the payload carries them (common case: file absent).
 

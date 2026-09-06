@@ -14,7 +14,7 @@ import { authenticate } from '../src/auth.mjs';
 import { sync } from '../src/loans.mjs';
 import { openLoan, fetchOpenbook, probeEData } from '../src/openbook.mjs';
 import { fetchThunderMedia } from '../src/metadata.mjs';
-import { loadConfig } from '../src/config.mjs';
+import { loadConfig, sessionPath } from '../src/config.mjs';
 import { generatorInfo } from '../src/util.mjs';
 
 const arg = (name, def) => {
@@ -37,7 +37,7 @@ const save = (dir, name, data) => {
   console.log(`   saved ${name}`);
 };
 
-const { client, identity, cardId } = await authenticate(cfg);
+const { client, identity, cardId } = await authenticate({ ...cfg, sessionFile: sessionPath() });
 console.log(`authenticated (card ${cardId})`);
 
 // 1. the whole account sync payload
