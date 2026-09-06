@@ -20,6 +20,13 @@ deterministic e2e/sim fixtures, and community knowledge of the Thunder catalog A
 (`x-client-id: dewey`). Test fixtures mirror our assumptions and are **not**
 independent evidence.
 
+**Live captures (2026-09-06):** the Thunder catalog is public, so §6–§8 (media
+records, availability, search, characteristics) were verified against real
+Auckland Libraries responses — 3 full media records, ~68 search-item records
+(21-key→51-key superset), an availability batch, and stargazer characteristics.
+Raw captures: `sample-data/thunder-catalog/` (gitignored). The loan-level payloads
+(§2–§4) still need a captcha-passed card link to sample live.
+
 Persistence rule: every payload below is stored **verbatim and complete** in a
 sidecar (`passport.json`, `openbook.json`, `loan.json`, `thunder.json`) — so any
 property this document misses still survives in the raw record. The confidence
@@ -118,42 +125,81 @@ base64 → UTF-8 → JSON. **We keep only the payload's `.b` key** (see limitati
 | `title` | string | Chapter/page title. | very high |
 | `path` | `"<file>#<offset>"` | TOC target; the **fragment is the chapter start time** (e.g. `0.00000-119.00000`), captured verbatim as `chapters[].offset`. | very high (existence); high (offset semantics — LibbyRip parses it identically) |
 
-## 6. Thunder catalog record — `GET thunder…/media/{id}` → `thunder.json` (if 200)
+## 6. Thunder media record — `GET thunder…/media/{id}` → `thunder.json` (if 200)
 
 Catalog-side metadata, independent of the loan. Fetch failure is tolerated
-(`null`) and never fails an archive.
+(`null`) and never fails an archive. **Live-verified 2026-09-06 against Auckland
+Libraries: a full record carries 51 top-level keys** (grouped below). Search
+items (`/media?query=…`) carry the identical 51-key shape.
+
+### Identity & catalog text
 
 | Property | Shape | Meaning | Conf. |
 |---|---|---|---|
-| `id` / `reserveId` | string | Title id. | very high |
-| `title` / `subtitle` | string | Catalog title. | very high |
-| `firstCreatorName` | string | Primary author. | very high |
-| `creators[]` | `{ name, role }` | Full creator list. | high |
-| `type.id` | string | Format family. | high |
-| `publisher.name` / `publisherAccount.name` | string | Publisher (either field). | high |
-| `publishDateText` / `publishDate` | string | Publication date. | medium |
-| `edition` | string | Edition. | medium |
-| `languages[]` | `{ id, name }` | Languages. | medium |
+| `id` / `reserveId` | string | Title id (same id every command uses). | very high |
+| `title` / `subtitle` | string | Catalog title / subtitle. | very high |
+| `sortTitle` | string | Sort-formatted title. | very high |
+| `firstCreatorId` / `firstCreatorName` / `firstCreatorSortName` | string | Primary creator fields. | very high |
+| `creators[]` | `{ id, intelligenceType, name, role, roleDiscipline, sortName }` | Full creator list; `role` drives author/narrator extraction. | very high (keys); medium (`intelligenceType`, `roleDiscipline` semantics) |
 | `description` | string (HTML) | Catalog description. | very high |
-| `subjects[]` | `{ name }` | Subject tags → `metadata.json.subjects`. | high |
-| `formats[]` + `formats[].identifiers[]` | `{ id }` / `{ type, value }` — type `ISBN` | Format list and ISBNs → `metadata.json.isbns`. | high |
-| `covers{}` | `{ href, width }` per variant | Cover variants; widest wins. | high |
-| `starRating` / `starRatingCount` | number | Aggregate rating. | medium |
-| `sample.href` / `sample.url` | URL | Excerpt link. | medium |
+| `type` | `{ id, name }` | Format family (`audiobook`, `ebook`, `magazine`). | very high |
+| `languages[]` | `{ id, name }` | Languages. | very high |
+| `publishDate` / `publishDateText` / `estimatedReleaseDate` | string/number | Publication / release dates. | very high (keys); medium (exact formats per field) |
+| `imprint` | `{ id, name }` | Imprint. | very high (keys) |
+| `starRating` / `starRatingCount` | number | Aggregate community rating. | very high (keys) |
+| `ratings` | `{ maturityLevel, naughtyScore }` | Internal content ratings. | medium (semantics inferred) |
+| `reviewCounts` | `{ premium, publisherSupplier }` | Review counts by source. | medium (semantics inferred) |
+
+### Classification
+
+| Property | Shape | Meaning | Conf. |
+|---|---|---|---|
+| `subjects[]` | `{ id, name }` | Subject tags → `metadata.json.subjects`. | very high |
+| `levels[]` | `{ id, name, value }` | Reading/interest levels. | very high (keys); low (value scale) |
+| `bisac[]` / `bisacCodes` | `{ code, description }` / string[] | BISAC subject codes. | very high (keys) |
+| `classifications` | object (empty in captures) | Classification block; rarely populated. | low |
+
+### Formats & media
+
+| Property | Shape | Meaning | Conf. |
+|---|---|---|---|
+| `formats[]` | array, one per offered format | Keys observed: `id`, `name`, `isbn`, `identifiers[]`, `fulfillmentType`, `hasAudioSynchronizedText`, `isBundleParent`, `bundledContent`, `onSaleDateUtc`, `rights`, `sample`. | very high (keys); medium (`rights`, `bundledContent` semantics) |
+| `formats[].identifiers[]` | `{ type: "ISBN", value }` | Isbns → `metadata.json.isbns`. | very high |
+| `covers{}` | `cover150Wide` / `cover300Wide` / `cover510Wide`, each `{ href, … }` | Cover variants; widest wins. | very high |
+| `sample` | `{ href }` | Excerpt link. | very high |
+| `constraints` | `{ isDisneyEulaRequired }` | Licensing constraints. | medium |
+| `contentAccessLevels` | number | Access-level bitmask. | low |
+
+### Availability (inline — mirrors §7)
+
+| Property | Shape | Meaning | Conf. |
+|---|---|---|---|
+| `isAvailable`, `availableCopies`, `ownedCopies`, `luckyDayAvailableCopies`, `luckyDayOwnedCopies`, `holdsCount`, `holdsRatio`, `estimatedWaitDays`, `estimatedReleaseDate`, `availabilityType` | number/string | Live availability snapshot. | very high (keys), high (semantics) |
+| `isHoldable`, `isFastlane`, `isOwned`, `isPreReleaseTitle`, `isRecommendableToLibrary`, `isRestricted`, `isAdvantageFiltered`, `isBundledChild`, `juvenileEligible`, `youngAdultEligible`, `visitorEligible` | bool | Entitlement/eligibility flags. | very high (keys); low–medium (individual semantics inferred from names) |
 
 ## 7. Availability record — `POST thunder…/media/availability` (ephemeral; `libby avail`)
 
+Batch response: `{ items: [...] }` — live-verified 2026-09-06: each item carries
+**23 keys** (the availability subset above, minus catalog text, plus
+`estimatedReleaseDate`, `luckyDayOwnedCopies`, `isOwned`, `visitorEligible`,
+`juvenileEligible`, `youngAdultEligible`, `contentAccessLevels`, `formats`). All
+keys very high (existence); per-flag semantics as noted in §6.
+
+## 7b. Catalog search response — `GET thunder…/media?query=…` (ephemeral; `libby search`)
+
+Top level: `facets`, `items`, `links`, `queryKeys`, `sortOptions`, `totalItems`,
+`totalItemsText`. **`items[]` are full 51-key media records** (identical to §6) —
+so `libby search` already receives everything §6 documents.
+
+## 7c. Stargazer characteristics — `GET stargazer…/{lib}/characteristics/title/{id}`
+
+Live-verified shape:
+
 | Property | Shape | Meaning | Conf. |
 |---|---|---|---|
-| `id` / `reserveId` | string | Title id. | very high |
-| `isAvailable` | bool | Available now. | very high |
-| `availableCopies` / `ownedCopies` | number | Copy counts. | very high |
-| `holdsCount` / `holdsRatio` | number | Queue depth. | very high / high |
-| `estimatedWaitDays` | number | Wait estimate. | very high |
-| `luckyDayAvailableCopies` | number | Lucky Day copies. | high |
-| `isHoldable` | bool | Whether a hold can be placed. | very high |
-| `isFastlane` | bool | Fastlane flag. | medium |
-| `availabilityType` | string | Availability class. | medium |
+| `title_id` | string | Echoes the requested id. | very high |
+| `matches` | number | How many characteristic entries matched. | very high |
+| `characteristics` | nested `{ category: { subkey: { emoji: word } } }` — e.g. `fiction → adults → { "🛸": "cosmic", … }` | Emoji-keyed tag tree; `getCharacteristics` flattens it to the word strings. | very high (shape), high (semantics) |
 
 ## 8. Read-host page — `parent.__bif_cfc1(self, '<blob>')` → `pages/` + EPUB
 
