@@ -301,11 +301,13 @@ export async function fetchOpenbook(passport, { insecureTLS = false, timeoutMs =
   // 1. Follow the signed `message` handshake (no Bearer) to set the listen cookie.
   await jar.follow(web + '?' + passport.message);
 
-  // 2. Fetch the player page (carries window.eData).
+  // 2. Fetch the player page (carries window.eData). `onPage(html, host)` lets
+  //    callers capture the raw page — e.g. for obfuscation-drift probes.
   const res = await jar.request(host, 'GET', '/', { headers: { Accept: 'text/html' } });
   if (res.status !== 200) throw new Error(`player page -> ${res.status}`);
-  const { openbook, extra } = decodeOpenbookFull(res.body.toString('utf8'), buid);
-  return { openbook, extra, web, buid, cookie: jar.cookieFor(host) };
+  const html = res.body.toString('utf8');
+  const { openbook, extra } = decodeOpenbookFull(html, buid);
+  return { openbook, extra, web, buid, cookie: jar.cookieFor(host), html };
 }
 
 /**

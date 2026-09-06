@@ -19,3 +19,6 @@ npm-debug.log*
 *.swp
 .idea/
 .vscode/
+
+# real-payload sample captures (contain account data)
+sample-data/
