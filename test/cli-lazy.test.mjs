@@ -49,8 +49,8 @@ const USAGE = {
     config: ['loadConfig'],
     auth: ['authenticate'],
     loans: ['sync', 'audiobookLoans', 'readableLoans'],
-    archive: ['archiveAudiobook'],
-    archiveRead: ['archiveReadable'],
+    archive: ['prepareAudiobook', 'finishAudiobook'],
+    archiveRead: ['prepareReadable', 'finishReadable'],
     sentry: ['SentryError'],
   },
 };

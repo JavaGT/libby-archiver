@@ -21,7 +21,6 @@ import { mapLimit } from './pool.mjs';
 import { fetchThunderMedia, maxResCoverUrl, downloadCover } from './metadata.mjs';
 import {
   pad,
-  sanitize,
   claimBookDir,
   writeJson,
   writeManifest,
@@ -32,13 +31,20 @@ import {
 } from './util.mjs';
 
 /**
+ * Setup phase of an audiobook archive: claim the folder, open the loan, decode the
+ * openbook (gateway + listen-API round trips — no payload downloads). Split from
+ * finishAudiobook so `libby archive --all` can keep the NEXT loan's setup in flight
+ * while the active loan downloads (archiveLoanQueue in bin/libby.mjs); `log` is
+ * injectable there, so a prefetched loan's lines are buffered until it becomes active.
+ *
  * @param {object} ctx   { client, identity, cfg, log }
  * @param {Loan} loan
  * @param {string} outDir   base output directory
+ * @returns {Promise<{ctx, loan, bookDir, openbook, web, cookie, spine}>} state for
+ *   finishAudiobook
  */
-export async function archiveAudiobook(ctx, loan, outDir) {
+export async function prepareAudiobook(ctx, loan, outDir, log = ctx.log ?? (() => {})) {
   const { client, identity, cfg } = ctx;
-  const log = ctx.log ?? (() => {});
 
   const { bookDir, folder } = claimBookDir(outDir, loan);
   log(`\n=> ${folder}`);
@@ -64,6 +70,17 @@ export async function archiveAudiobook(ctx, loan, outDir) {
 
   // 3. raw loan record
   writeJson(path.join(bookDir, 'loan.json'), loan.raw, { secret: true });
+
+  return { ctx, loan, bookDir, openbook, web, cookie, spine };
+}
+
+/**
+ * Download + manifest phase; consumes the state prepareAudiobook returned. Logs go
+ * through ctx.log: finish only ever runs while the loan is the active one.
+ */
+export async function finishAudiobook({ ctx, loan, bookDir, openbook, web, cookie, spine }) {
+  const { cfg } = ctx;
+  const log = ctx.log ?? (() => {});
 
   // 4. supplementary metadata + cover — started (not awaited) so both catalog round
   // trips run while the parts download below; each is awaited where its result is first
@@ -159,6 +176,11 @@ export async function archiveAudiobook(ctx, loan, outDir) {
 
   log(`   done: ${bookDir}`);
   return bookDir;
+}
+
+/** Archive one audiobook loan end to end (single-title path and library API). */
+export async function archiveAudiobook(ctx, loan, outDir) {
+  return finishAudiobook(await prepareAudiobook(ctx, loan, outDir));
 }
 
 function readmeText(loan, parts) {
