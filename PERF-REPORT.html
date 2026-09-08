@@ -89,6 +89,32 @@
     <p class="verify">✓ npm test 80 pass / 0 fail; git diff confirms src/ untouched; evidence in perf/loop-showdown.mjs T2 section + perf-notes-t2-loops.md</p>
     <p class="dim files">perf/loop-showdown.mjs · perf-notes-t2-loops.md</p>
   </div>
+  <div class="card" id="T2-W2C">
+    <div class="card-head">
+      <span class="wave-id">T2-W2C</span>
+      <h3>archive --all loan pipelining + read-path manifest pre-hash</h3>
+      <span class="badge live">in progress</span>
+      <span class="dim area">orchestration (bin/libby.mjs, src/archive*.mjs, src/pool.mjs)</span>
+    </div>
+    <p class="change">(1) Overlap the next loan’s setup round trips with the current loan’s downloads during archive --all — bounded to one prefetch in flight, ordered logs, identical failure semantics. (2) Hash page/asset/cover bytes in hand as they are written and feed writeManifest’s known map, so the integrity pass stops re-reading the archive.</p>
+    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>simulated --all wall (5 loans)</td><td class="num"> ms (net-sim)</td><td class="num"><b> ms (net-sim)</b></td></tr></table>
+    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>kill criterion: if ordered logs + failure semantics need more than a ~100-line diff, reject</li></ul>
+    
+    
+  </div>
+  <div class="card" id="T2-W2D">
+    <div class="card-head">
+      <span class="wave-id">T2-W2D</span>
+      <h3>EPUB assembly RAM/storage audit on big fixtures</h3>
+      <span class="badge live">in progress</span>
+      <span class="dim area">library RAM/storage (src/epub.mjs, src/util.mjs, src/metadata.mjs, src/http.mjs)</span>
+    </div>
+    <p class="change">Bill of health on a ~45 MB synthetic magazine: writeEpub wall + peak RSS vs the entry+one-payload theory floor; writeManifest read sizing (highWaterMark, workers); downloadCover buffering audit; storage accounting for the owner (pages/assets vs EPUB duplication ratio, pretty vs compact sidecar JSON).</p>
+    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>writeEpub peak RSS, 45 MB fixture</td><td class="num"> MB</td><td class="num"><b> MB</b></td></tr></table>
+    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>adoption bar ≥ 10% on the named metric; storage duplication is a product decision recorded for the owner, not changed</li></ul>
+    
+    
+  </div>
 
 <h2>Baseline measurements (code at fc670da (main, includes all perf-trial-20260906 wins))</h2>
 <p class="dim">From <code>perf/results-baseline.json</code> — Apple M4, numbers are medians. A same-code rerun agrees within noise.</p>
@@ -98,7 +124,7 @@
 <p>This trial runs on branch <code>perf-trial-20260909</code> in worktree <code>../perf-trial-20260909-030719</code>.</p><p>When the owner is happy with the report: from the main checkout run <code>git merge perf-trial-20260909</code> (fast-forward), then re-run <code>npm test</code>.</p><p>Every wave card lists its tradeoffs and the exact verification run. Waves marked <i>measured, rejected</i> were tried and deliberately not adopted.</p>
 
 <h2>Campaign log</h2>
-<table><tr><td class="dim">2026-09-09 03:58</td><td>T2-W1B closed as measured-rejected: u32 swap 1.60x isolated but ~1% end-to-end; cfc1 headline re-framed (realistic blob 3.4 ms). Evidence committed; src/read.mjs untouched.</td></tr><tr><td class="dim">2026-09-09 03:36</td><td>T2-W1A merged (commit 5fe5d0b): lazy per-command CLI loading — help 32.1→26.4 ms, where 32.1→30.0 ms; tests 80/80; coordinator independently re-measured before committing.</td></tr><tr><td class="dim">2026-09-09 03:14</td><td>Wave 1 dispatched: lane A (CLI startup, owns bin/libby.mjs), lane B (cfc1 decode, owns src/read.mjs + perf/loop-showdown.mjs).</td></tr><tr><td class="dim">2026-09-09 03:12</td><td>Full baseline benchmark captured (perf/results-t2-baseline.json); report published and opened in Safari (auto-refresh 5 min).</td></tr><tr><td class="dim">2026-09-09 03:07</td><td>Trial opened. Worktree ../perf-trial-20260909-030719 created from main fc670da. Tests: 78 pass / 0 fail.</td></tr></table>
+<table><tr><td class="dim">2026-09-09 04:05</td><td>Wave 2 dispatched: lane C (loan pipelining + read-path pre-hash) and lane D (big-fixture RAM/storage audit). Disjoint ownership.</td></tr><tr><td class="dim">2026-09-09 03:58</td><td>T2-W1B closed as measured-rejected: u32 swap 1.60x isolated but ~1% end-to-end; cfc1 headline re-framed (realistic blob 3.4 ms). Evidence committed; src/read.mjs untouched.</td></tr><tr><td class="dim">2026-09-09 03:36</td><td>T2-W1A merged (commit 5fe5d0b): lazy per-command CLI loading — help 32.1→26.4 ms, where 32.1→30.0 ms; tests 80/80; coordinator independently re-measured before committing.</td></tr><tr><td class="dim">2026-09-09 03:14</td><td>Wave 1 dispatched: lane A (CLI startup, owns bin/libby.mjs), lane B (cfc1 decode, owns src/read.mjs + perf/loop-showdown.mjs).</td></tr><tr><td class="dim">2026-09-09 03:12</td><td>Full baseline benchmark captured (perf/results-t2-baseline.json); report published and opened in Safari (auto-refresh 5 min).</td></tr><tr><td class="dim">2026-09-09 03:07</td><td>Trial opened. Worktree ../perf-trial-20260909-030719 created from main fc670da. Tests: 78 pass / 0 fail.</td></tr></table>
 
 <footer>Auto-generated by <code>perf/render.mjs</code> from <code>perf/report-data.json</code> · trial branches <code>perf-trial-20260909*</code> · report last rendered 9/9/2026, 3:30:28 AM</footer>
 </main>

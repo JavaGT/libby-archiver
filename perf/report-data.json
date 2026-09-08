@@ -119,6 +119,42 @@
         "perf/loop-showdown.mjs",
         "perf-notes-t2-loops.md"
       ]
+    },
+    {
+      "id": "T2-W2C",
+      "name": "archive --all loan pipelining + read-path manifest pre-hash",
+      "area": "orchestration (bin/libby.mjs, src/archive*.mjs, src/pool.mjs)",
+      "status": "in-progress",
+      "change": "(1) Overlap the next loan’s setup round trips with the current loan’s downloads during archive --all — bounded to one prefetch in flight, ordered logs, identical failure semantics. (2) Hash page/asset/cover bytes in hand as they are written and feed writeManifest’s known map, so the integrity pass stops re-reading the archive.",
+      "metrics": [
+        {
+          "name": "simulated --all wall (5 loans)",
+          "before": null,
+          "after": null,
+          "unit": " ms (net-sim)"
+        }
+      ],
+      "tradeoffs": [
+        "kill criterion: if ordered logs + failure semantics need more than a ~100-line diff, reject"
+      ]
+    },
+    {
+      "id": "T2-W2D",
+      "name": "EPUB assembly RAM/storage audit on big fixtures",
+      "area": "library RAM/storage (src/epub.mjs, src/util.mjs, src/metadata.mjs, src/http.mjs)",
+      "status": "in-progress",
+      "change": "Bill of health on a ~45 MB synthetic magazine: writeEpub wall + peak RSS vs the entry+one-payload theory floor; writeManifest read sizing (highWaterMark, workers); downloadCover buffering audit; storage accounting for the owner (pages/assets vs EPUB duplication ratio, pretty vs compact sidecar JSON).",
+      "metrics": [
+        {
+          "name": "writeEpub peak RSS, 45 MB fixture",
+          "before": null,
+          "after": null,
+          "unit": " MB"
+        }
+      ],
+      "tradeoffs": [
+        "adoption bar ≥ 10% on the named metric; storage duplication is a product decision recorded for the owner, not changed"
+      ]
     }
   ],
   "baseline": {
@@ -175,6 +211,10 @@
     {
       "t": "2026-09-09 03:58",
       "entry": "T2-W1B closed as measured-rejected: u32 swap 1.60x isolated but ~1% end-to-end; cfc1 headline re-framed (realistic blob 3.4 ms). Evidence committed; src/read.mjs untouched."
+    },
+    {
+      "t": "2026-09-09 04:05",
+      "entry": "Wave 2 dispatched: lane C (loan pipelining + read-path pre-hash) and lane D (big-fixture RAM/storage audit). Disjoint ownership."
     }
   ]
 }
