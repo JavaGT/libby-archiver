@@ -47,6 +47,42 @@ export function syntheticEpub({ pages = 120, pageSize = 6 * 1024, assets = 100, 
   return files;
 }
 
+/**
+ * Big-magazine fixture (T2 RAM wave): ~46 MB of entry data — 300 × 6 KB pages +
+ * 260 × 160 KB jpeg-ish assets + 250 KB cover — the scale of a large fixed-layout
+ * magazine. A lazy generator so `prepare`-style callers hold ONE payload at a time;
+ * array-style consumers spread it (`[...bigMagazine()]`). Entry names mirror the
+ * on-disk archive shape archive-read produces (pages/, assets/, cover.jpg).
+ */
+export function* bigMagazine({ pages = 300, pageSize = 6 * 1024, assets = 260, assetSize = 160 * 1024, coverSize = 250 * 1024 } = {}) {
+  for (let i = 0; i < pages; i++) {
+    yield { name: `pages/${String(i + 1).padStart(4, '0')}.xhtml`, data: Buffer.from(textPage(pageSize, i), 'utf8'), kind: 'page' };
+  }
+  for (let i = 0; i < assets; i++) {
+    yield { name: `assets/urlHash-${i}.jpg`, data: jpegish(assetSize), kind: 'asset' };
+  }
+  yield { name: 'cover.jpg', data: jpegish(coverSize), kind: 'cover' };
+}
+
+/**
+ * Synthetic archive-folder spec for writeManifest benches: a realistic readable
+ * tree — ~60% of bytes as 150 KB assets, ~25% as 5 MB audiobook-style parts (the
+ * only files that exceed a 1 MiB stream read), ~15% as 6 KB pages — sized to
+ * `totalMB`, deterministically (same rel paths + sizes for the same totalMB).
+ */
+export function manifestTree(totalMB) {
+  const total = totalMB * 1024 * 1024;
+  const spec = [];
+  const nAssets = Math.round((total * 0.6) / (150 * 1024));
+  const nParts = Math.max(1, Math.round((total * 0.25) / (5 * 1024 * 1024)));
+  const pageBytes = total - nAssets * 150 * 1024 - nParts * 5 * 1024 * 1024;
+  const nPages = Math.max(1, Math.round(pageBytes / (6 * 1024)));
+  for (let i = 0; i < nPages; i++) spec.push({ rel: `pages/${String(i + 1).padStart(5, '0')}.xhtml`, bytes: 6 * 1024 });
+  for (let i = 0; i < nAssets; i++) spec.push({ rel: `assets/urlHash-${i}.jpg`, bytes: 150 * 1024 });
+  for (let i = 0; i < nParts; i++) spec.push({ rel: `Part ${String(i + 1).padStart(2, '0')}.mp3`, bytes: 5 * 1024 * 1024 });
+  return spec;
+}
+
 // ---- bifocal eData fixture (mirrors the forward-scramble in test/openbook.test.mjs) ----
 
 const BUID = 'ab9cd'; // contains a nonzero digit so the scramble engages
