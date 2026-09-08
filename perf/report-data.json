@@ -10,7 +10,8 @@
       "at most 2 concurrent subagents; disjoint file areas (or same problem, different approaches)",
       "every adopted change measured on this machine; tradeoffs recorded per wave",
       "gate between waves: node --test (78 pass) + perf/bench.mjs comparison vs frozen baseline"
-    ]
+    ],
+    "shipped": "2026-09-09 — adopted by owner: merged to main (040c299 fast-forward); trial worktree and branch removed; report lives at the repo root."
   },
   "environment": {
     "node": "v26.7.0",
@@ -374,6 +375,10 @@
     {
       "t": "2026-09-09 05:55",
       "entry": "T2-W3 merged on perf-trial-20260909-epubonly: EPUB-only readables per owner decision, staging-dir design, lossless e2e pins; storage at rest −~51% at real scale; tests 80/80."
+    },
+    {
+      "t": "2026-09-09 06:10",
+      "entry": "ADOPTED: owner said adopt — perf-trial-20260909-epubonly fast-forwarded to main (040c298), tests 80/80 on main, worktree/branch removed, report at repo root."
     }
   ]
 }
