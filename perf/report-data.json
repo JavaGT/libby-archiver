@@ -19,8 +19,8 @@
   "rendered": "9/9/2026, 3:30:28 AM",
   "tldr": [
     {
-      "value": "1 wave merged",
-      "label": "CLI startup 32.1 → 26.4 ms (lazy per-command loading)"
+      "value": "2 waves merged",
+      "label": "CLI startup 26.4 ms + archive --all pipelining"
     },
     {
       "value": "6.5 ms",
@@ -35,8 +35,8 @@
       "label": "realistic pages decode in 3.4 ms — 19 ms was a fixture artifact (W1B rejected)"
     },
     {
-      "value": "wave 2 planned",
-      "label": "--all loan pipelining + read-path manifest pre-hash"
+      "value": "1.24× --all",
+      "label": "loan pipelining merged; manifest pass 15→1 ms on pre-hashed books (W2C)"
     }
   ],
   "summary": [
@@ -124,18 +124,44 @@
       "id": "T2-W2C",
       "name": "archive --all loan pipelining + read-path manifest pre-hash",
       "area": "orchestration (bin/libby.mjs, src/archive*.mjs, src/pool.mjs)",
-      "status": "in-progress",
-      "change": "(1) Overlap the next loan’s setup round trips with the current loan’s downloads during archive --all — bounded to one prefetch in flight, ordered logs, identical failure semantics. (2) Hash page/asset/cover bytes in hand as they are written and feed writeManifest’s known map, so the integrity pass stops re-reading the archive.",
+      "status": "merged",
+      "change": "(1) Loan pipelining: archiveAudiobook/archiveReadable split into prepareX (claim folder + open loan + decode openbook — REST round trips) and finishX (downloads + assembly); archiveLoanQueue in bin keeps exactly ONE next-loan setup in flight during the active loan’s downloads. Prefetched logs buffer and replay in loan order (transcript-equality test), a failed prefetch surfaces as that loan’s FAILED line, whoa still exits 3, and the composed single-loan exports are preserved for the library API. (2) Read-path pre-hash: page bodies, assets, and the cover are sha256-hashed as they are written and fed to writeManifest’s known map alongside the EPUB digest, so the integrity pass re-reads only small sidecars; resume stays correct because only files written this run get entries.",
       "metrics": [
         {
-          "name": "simulated --all wall (5 loans)",
+          "name": "simulated archive --all, 5 loans (net-sim: 60ms setup RTT, 400ms/part ×6, concurrency 3)",
+          "before": 5332,
+          "after": 4306,
+          "unit": " ms (1.24x)"
+        },
+        {
+          "name": "writeManifest on 16.1 MB / 222 files, all pre-hashed (median of 5)",
+          "before": 15,
+          "after": 1,
+          "unit": " ms"
+        },
+        {
+          "name": "new contract tests",
           "before": null,
-          "after": null,
-          "unit": " ms (net-sim)"
+          "after": 5,
+          "unit": " (order+overlap+transcript, prefetch failure, whoa in finish, whoa in prefetch, single-loan path)"
         }
       ],
       "tradeoffs": [
-        "kill criterion: if ordered logs + failure semantics need more than a ~100-line diff, reject"
+        "pipelining only saves the LAST setup round trips × (N−1) — real-world ~0.2–0.6 s per loan given gateway RTTs; wall-clock is still dominated by downloads",
+        "one extra setup’s REST traffic may be wasted if the run whoa-exits before that loan becomes active (teardown on exit; acceptable, bounded to one loan)",
+        "the pre-hash win is re-read avoidance (files are warm in page cache just after writing) — the hashing work itself moves into the download phase rather than disappearing",
+        "prepare/finish is a public-API addition (additive exports; existing signatures unchanged) — noted for semver"
+      ],
+      "verified": "npm test 85 pass / 0 fail; coordinator re-ran gate and reviewed the full diff before committing; commit e2b920d",
+      "files": [
+        "bin/libby.mjs",
+        "src/archive.mjs",
+        "src/archive-read.mjs",
+        "test/archive-pipeline.test.mjs",
+        "test/cli-lazy.test.mjs",
+        "perf/net-sim.mjs",
+        "perf/manifest-prehash-one.mjs",
+        "perf-notes-t2-pipeline.md"
       ]
     },
     {
@@ -215,6 +241,10 @@
     {
       "t": "2026-09-09 04:05",
       "entry": "Wave 2 dispatched: lane C (loan pipelining + read-path pre-hash) and lane D (big-fixture RAM/storage audit). Disjoint ownership."
+    },
+    {
+      "t": "2026-09-09 04:52",
+      "entry": "T2-W2C merged (commit e2b920d): loan pipelining 1.24× simulated, manifest pre-hash 15→1 ms; 85/85 tests; first lane-D attempt died to a rate limit before writing anything and was re-dispatched fresh."
     }
   ]
 }
