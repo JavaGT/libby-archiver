@@ -19,30 +19,31 @@
   "rendered": "9/9/2026, 3:30:28 AM",
   "tldr": [
     {
-      "value": "2 waves merged",
-      "label": "CLI startup 26.4 ms + archive --all pipelining"
+      "value": "3 wins merged",
+      "label": "CLI startup ×, archive --all 1.24×, manifest hashing −38–46%"
     },
     {
-      "value": "6.5 ms",
-      "label": "EPUB zip assembly starting point (was 177 in pre-trial-1)"
+      "value": "24.5 ms",
+      "label": "CLI help startup — at the bare-node floor (was 33.2)"
     },
     {
-      "value": "26.4 ms",
-      "label": "CLI help startup now — 2 ms above the bare-node floor"
+      "value": "1.24×",
+      "label": "simulated archive --all wall (5 loans, net-sim)"
     },
     {
-      "value": "cfc1 closed",
-      "label": "realistic pages decode in 3.4 ms — 19 ms was a fixture artifact (W1B rejected)"
+      "value": "2 rejected",
+      "label": "cfc1 u32 swap + manifest hwm/worker knobs — measured, evidence kept"
     },
     {
-      "value": "1.24× --all",
-      "label": "loan pipelining merged; manifest pass 15→1 ms on pre-hashed books (W2C)"
+      "value": "2 decisions",
+      "label": "storage questions for the owner (1.97× readable duplication; sidecar format)"
     }
   ],
   "summary": [
-    "<b>Scope.</b> Trial 2 of the continuous performance campaign. Trial 1 (perf-trial-20260906) merged: native CRC32, stored media + level-6 deflate in EPUBs, single-pass in-memory zip, streaming zip writer, lazy payload thunks, hash-while-streaming, keep-alive connection pooling, concurrent part/page/asset downloads, overlapped catalog fetches, latin1 byte loops for cfc1/descramble. This trial hunts the remaining headroom across CLI interface, decode loops, network orchestration, and RAM/storage.",
-    "<b>Status.</b> Wave 1 complete: (A) lazy CLI loading merged (help 32.1→26.4 ms); (B) cfc1 u32 swap measured and honestly rejected — the isolated loop wins 1.60× but is ~3% of the pipeline, and the old 19 ms headline was a random-bytes utf8-decode artifact (realistic pages: 3.4 ms). Wave 2 lanes: (C) archive --all loan pipelining + read-path manifest pre-hash; (D) EPUB assembly RAM/storage audit on big fixtures.",
-    "<b>How numbers are produced.</b> <code>node --expose-gc perf/bench.mjs</code> medians against a frozen copy of the campaign-start code in <code>perf/baseline/</code>; loop work uses the interleaved-median methodology in <code>perf/loop-showdown.mjs</code>."
+    "<b>Scope.</b> Trial 2 of the continuous performance campaign, on top of trial-1-optimized main (fc670da). Four lanes across two waves: interface startup, decode CPU, download orchestration, RAM/storage — every change measured on this machine, every rejection documented with the numbers that killed it.",
+    "<b>What improved.</b> Every CLI invocation now starts at the bare-node floor (33.2→24.5 ms) via lazy per-command loading. <code>libby archive --all</code> overlaps the next loan’s setup round trips with the active loan’s downloads (1.24× simulated wall, ordered logs, identical failure semantics). The integrity manifest skips re-reading anything hashed at write time (15→1 ms on a 16 MB book) and hashes what remains ~2× faster on many-file trees (51.6→32.2 ms at 50 MB) via reused-buffer pread.",
+    "<b>What was measured and left alone.</b> cfc1’s u32 swap (1.60× isolated, ~1% e2e — and the 19 ms bench headline was a random-bytes utf8 artifact; realistic pages decode in 3.4 ms). Manifest hwm/worker knobs (both neutral-to-worse). EPUB assembly RAM is already within ~12 MB of the theory floor (transient allocator churn, not retention). Cover-download buffering and sidecar JSON format: below the worth-it bar, numbers recorded.",
+    "<b>State.</b> Branch <code>perf-trial-20260909</code> is 8 commits ahead of main, tests 85/85, final bench <code>perf/results-t2-final.json</code>. Remaining levers are product tradeoffs (storage duplication) or sub-noise micro-items — honest stop for this trial; the report carries the two decision questions for the owner."
   ],
   "waves": [
     {
@@ -168,18 +169,74 @@
       "id": "T2-W2D",
       "name": "EPUB assembly RAM/storage audit on big fixtures",
       "area": "library RAM/storage (src/epub.mjs, src/util.mjs, src/metadata.mjs, src/http.mjs)",
-      "status": "in-progress",
-      "change": "Bill of health on a ~45 MB synthetic magazine: writeEpub wall + peak RSS vs the entry+one-payload theory floor; writeManifest read sizing (highWaterMark, workers); downloadCover buffering audit; storage accounting for the owner (pages/assets vs EPUB duplication ratio, pretty vs compact sidecar JSON).",
+      "status": "merged",
+      "change": "(S2, adopted) writeManifest no longer pumps a fresh createReadStream per file: each of the 8 workers reuses one 1 MiB buffer over an explicit pread loop (short read = EOF, fd closed in finally). The stream machinery — not SHA — was the cost. Manifest output byte-identical, order unchanged, 8 MiB read cap unchanged. (S1, numbers-only) Big-fixture bill of health: on a 44.7 MB / 561-entry magazine the streaming thunk path peaks at 69–70 MB RSS vs 113 MB for the eager path and a ~57 MB theory floor — the 12 MB above floor is transient deflate/string churn the allocator retains, not a retained reference; no adoptable fix in src/epub.mjs. (S3, considered-not-adopted) downloadCover buffers (~1.6–6.4 MB transient incl. a failed JSON.parse of binary); <10% of process RSS, and the real win (hash-while-streaming into known) needs an archive-read + API change — owner lane. (S4) storage numbers below for owner decisions.",
       "metrics": [
         {
-          "name": "writeEpub peak RSS, 45 MB fixture",
-          "before": null,
-          "after": null,
-          "unit": " MB"
+          "name": "writeManifest, 50 MB many-file tree",
+          "before": 51.6,
+          "after": 32.2,
+          "unit": " ms (−38%)"
+        },
+        {
+          "name": "writeManifest, 200 MB many-file tree",
+          "before": 272.2,
+          "after": 147.5,
+          "unit": " ms (−46%)"
+        },
+        {
+          "name": "writeManifest on bench 13×4 MB tree",
+          "before": 17.36,
+          "after": 17.21,
+          "unit": " ms (within noise — win scales with file count; per-file stream setup was the cost)"
+        },
+        {
+          "name": "writeEpub peak RSS, 44.7 MB / 561 entries (thunk path, unchanged)",
+          "before": 113,
+          "after": 69.5,
+          "unit": " MB vs eager path; theory floor ~57"
         }
       ],
       "tradeoffs": [
-        "adoption bar ≥ 10% on the named metric; storage duplication is a product decision recorded for the owner, not changed"
+        "hwm 4 MiB and 16 workers were measured and rejected: 4 MiB buffers made it WORSE (51.6→84.5 ms / 272→478 ms — a fresh 4 MiB alloc per read), 16 workers ≤−7.5%",
+        "per-worker pread holds one fd per worker concurrently (8) — same as the streams it replaced",
+        "the sync floor (readFileSync+hash) still beats the async path ~1.8–2× in microbench, but blocking the event loop during a CLI manifest pass is the wrong trade for a library function"
+      ],
+      "verified": "npm test 85 pass / 0 fail (manifest byte-identity pins green); coordinator re-ran the full bench at t2-final; commit 06d6320",
+      "files": [
+        "src/util.mjs",
+        "perf/gen.mjs",
+        "perf/ram-big-one.mjs",
+        "perf-notes-t2-ram.md"
+      ]
+    },
+    {
+      "id": "T2-S4",
+      "name": "Storage accounting — two owner decisions (no code changed)",
+      "area": "storage (readable archives)",
+      "status": "",
+      "change": "Measured on the 44.7 MB magazine fixture: (a) the assembled EPUB contains 96.8% of the loose content bytes — each readable archive stores its book content ~1.97× (~88 MB on disk for a 45 MB magazine) because pages/*.xhtml + assets/* are kept alongside the EPUB that embeds them. The loose copies are the assembly source-of-truth and human-inspectable by design, so dropping them is a product decision, not a perf call. (b) Compact sidecar JSON would save 45% on thunder.json but 2.6 KB absolute, and −1% on openbook — rejected; human-readable archives are a product goal.",
+      "metrics": [
+        {
+          "name": "readable folder size vs EPUB-only",
+          "before": 44.7,
+          "after": 88,
+          "unit": " MB total on disk for a 45 MB magazine (~1.97×)"
+        },
+        {
+          "name": "compact vs pretty sidecar JSON",
+          "before": 0,
+          "after": 2.6,
+          "unit": " KB saved on thunder.json (−45%); openbook −1%"
+        }
+      ],
+      "tradeoffs": [
+        "decision question (a): keep pages/assets as the inspectable source of truth, or keep EPUB-only and re-derive pages on demand? Confidence: high on numbers, low on what the owner wants — implementation intentionally NOT started",
+        "decision question (b): none — compact sidecars are not worth it at these absolute sizes"
+      ],
+      "verified": "numbers from perf/ram-big-one.mjs on the deterministic 45 MB fixture; notes in perf-notes-t2-ram.md",
+      "files": [
+        "perf-notes-t2-ram.md"
       ]
     }
   ],
@@ -213,9 +270,9 @@
     }
   },
   "adoption": [
-    "This trial runs on branch <code>perf-trial-20260909</code> in worktree <code>../perf-trial-20260909-030719</code>.",
-    "When the owner is happy with the report: from the main checkout run <code>git merge perf-trial-20260909</code> (fast-forward), then re-run <code>npm test</code>.",
-    "Every wave card lists its tradeoffs and the exact verification run. Waves marked <i>measured, rejected</i> were tried and deliberately not adopted."
+    "This trial ran on branch <code>perf-trial-20260909</code> in worktree <code>../perf-trial-20260909-030719</code> — 8 commits, all gated (tests 85/85 + bench) before each commit.",
+    "To adopt everything: from the main checkout run <code>git merge perf-trial-20260909</code> (fast-forward), then <code>npm test</code>. To adopt selectively, each wave is its own commit (5fe5d0b W1A, fb7fc9d W1B evidence, e2b920d W2C, 06d6320 W2D).",
+    "Every wave card lists its tradeoffs and the exact verification run. Cards without a badge changed no code — they are decision inputs for the owner."
   ],
   "log": [
     {
@@ -245,6 +302,10 @@
     {
       "t": "2026-09-09 04:52",
       "entry": "T2-W2C merged (commit e2b920d): loan pipelining 1.24× simulated, manifest pre-hash 15→1 ms; 85/85 tests; first lane-D attempt died to a rate limit before writing anything and was re-dispatched fresh."
+    },
+    {
+      "t": "2026-09-09 05:40",
+      "entry": "T2-W2D merged (06d6320): manifest pread+reused buffer −38/−46%; RAM bill of health clean; storage decision numbers recorded. Final bench t2-final captured; trial closed at an honest stop."
     }
   ]
 }
