@@ -27,18 +27,7 @@
 import process from 'node:process';
 import fs from 'node:fs';
 import readline from 'node:readline';
-import { authenticate } from '../src/auth.mjs';
-import { sync, audiobookLoans, readableLoans } from '../src/loans.mjs';
-import { archiveAudiobook } from '../src/archive.mjs';
-import { archiveReadable } from '../src/archive-read.mjs';
-import { searchCatalog } from '../src/search.mjs';
-import { getAvailability, getTitle } from '../src/discover.mjs';
-import { borrowTitle, returnTitle, placeHold, cancelHold } from '../src/checkout.mjs';
-import { SentryError } from '../src/sentry.mjs';
-import { probeEData } from '../src/openbook.mjs';
-import { probeCfc1 } from '../src/read.mjs';
-import { runInit } from '../src/init.mjs';
-import { loadConfig, configPath, sessionPath } from '../src/config.mjs';
+import { fileURLToPath } from 'node:url';
 
 const HELP = `libby — search, borrow, and archive Libby / OverDrive audiobooks, ebooks & magazines (browser-free)
 
@@ -78,10 +67,30 @@ Config options (override saved config):
 
 First time? Run  libby init`;
 
-const COMMANDS = new Set([
+export const COMMANDS = new Set([
   'init', 'search', 'info', 'avail', 'borrow', 'return', 'hold', 'unhold',
   'list', 'archive', 'auth', 'where', 'probe', 'help',
 ]);
+
+// Lazy per-command module loading: each command branch awaits only the modules
+// it needs, so light commands (`help`, `where`, `search`, `info`, `avail`) never
+// pay to parse the heavy archive / openbook / read subgraph at startup.
+// test/cli-lazy.test.mjs guards this map — every loader must resolve and expose
+// exactly the functions the CLI destructures.
+export const load = {
+  auth: () => import('../src/auth.mjs'),
+  loans: () => import('../src/loans.mjs'),
+  archive: () => import('../src/archive.mjs'),
+  archiveRead: () => import('../src/archive-read.mjs'),
+  search: () => import('../src/search.mjs'),
+  discover: () => import('../src/discover.mjs'),
+  checkout: () => import('../src/checkout.mjs'),
+  sentry: () => import('../src/sentry.mjs'),
+  openbook: () => import('../src/openbook.mjs'),
+  read: () => import('../src/read.mjs'),
+  init: () => import('../src/init.mjs'),
+  config: () => import('../src/config.mjs'),
+};
 
 function parseArgs(argv) {
   const args = { _: [] };
@@ -133,7 +142,8 @@ async function confirm(question, { yes } = {}) {
 }
 
 /** Resolve just the library key (for auth-free commands like search). */
-function resolveLibraryKey(args) {
+async function resolveLibraryKey(args) {
+  const { loadConfig } = await load.config();
   const file = loadConfig();
   const library = args.library ?? process.env.LIBBY_LIBRARY ?? file.library;
   if (!library) {
@@ -143,7 +153,8 @@ function resolveLibraryKey(args) {
   return { library, insecureTLS: args.insecureTLS ?? file.insecureTLS ?? false };
 }
 
-function buildConfig(args) {
+async function buildConfig(args) {
+  const { loadConfig } = await load.config();
   const file = loadConfig();
   const cfg = {
     cardNumber: args.card ?? process.env.LIBBY_CARD ?? file.cardNumber,
@@ -170,7 +181,7 @@ function buildConfig(args) {
  * (right-click → Save in the browser, or devtools) and name the first contract
  * that no longer holds. See README → Obfuscation drift.
  */
-function runProbe(args) {
+async function runProbe(args) {
   const file = args._[1];
   if (!file) {
     console.error('Usage: libby probe <saved-player-page.html> [--buid <buid>]');
@@ -189,6 +200,7 @@ function runProbe(args) {
     return r;
   };
 
+  const { probeCfc1 } = await load.read();
   const rc = probeCfc1(html);
   console.log('\nread page (__bif_cfc1 cipher):');
   if (!rc.stages[0].ok) {
@@ -196,6 +208,7 @@ function runProbe(args) {
   } else report(rc);
 
   if (args.buid) {
+    const { probeEData } = await load.openbook();
     const re = report(probeEData(html, String(args.buid)));
     if (re.ok) console.log(`        openbook title: ${re.openbook.title?.main ?? '?'}`);
   } else {
@@ -216,8 +229,12 @@ async function main() {
     console.log(HELP);
     return;
   }
-  if (command === 'init') return runInit();
+  if (command === 'init') {
+    const { runInit } = await load.init();
+    return runInit();
+  }
   if (command === 'where') {
+    const { configPath, sessionPath } = await load.config();
     console.log(`config:  ${configPath()}`);
     console.log(`session: ${sessionPath()}`);
     return;
@@ -243,7 +260,8 @@ async function main() {
       console.error('--page must be a positive whole number.');
       process.exit(2);
     }
-    const { library, insecureTLS } = resolveLibraryKey(args);
+    const { library, insecureTLS } = await resolveLibraryKey(args);
+    const { searchCatalog } = await load.search();
     const { total, items } = await searchCatalog(library, terms, {
       format: args.format ?? 'all',
       availableOnly: !!args.available,
@@ -274,7 +292,8 @@ async function main() {
       console.error('Usage: libby info <id>   (id from `libby search`)');
       process.exit(2);
     }
-    const { library, insecureTLS } = resolveLibraryKey(args);
+    const { library, insecureTLS } = await resolveLibraryKey(args);
+    const { getTitle } = await load.discover();
     const t = await getTitle(library, String(id), { insecureTLS });
     const a = t.availability;
     const availLine = a.available
@@ -304,7 +323,8 @@ async function main() {
       console.error('Usage: libby avail <id> [<id> ...]');
       process.exit(2);
     }
-    const { library, insecureTLS } = resolveLibraryKey(args);
+    const { library, insecureTLS } = await resolveLibraryKey(args);
+    const { getAvailability } = await load.discover();
     const rows = await getAvailability(library, ids, { insecureTLS });
     for (const r of rows) {
       const status = r.available
@@ -318,7 +338,8 @@ async function main() {
     return;
   }
 
-  const cfg = buildConfig(args);
+  const cfg = await buildConfig(args);
+  const { authenticate } = await load.auth();
   const { client, identity, cardId } = await authenticate(cfg);
 
   if (command === 'auth') {
@@ -347,8 +368,9 @@ async function main() {
         // with an audiobook title_format; --format only overrides.
         let titleFormat = args.format && args.format !== 'all' ? args.format : undefined;
         if (!titleFormat) {
-          const { library, insecureTLS } = resolveLibraryKey(args);
+          const { library, insecureTLS } = await resolveLibraryKey(args);
           try {
+            const { getTitle } = await load.discover();
             titleFormat = (await getTitle(library, String(titleId), { insecureTLS, characteristics: false })).type;
           } catch (e) {
             console.error(`Could not look up the title's format (${e.message}).`);
@@ -356,6 +378,7 @@ async function main() {
             process.exit(1);
           }
         }
+        const { borrowTitle } = await load.checkout();
         const loan = await borrowTitle(client, identity, cardId, String(titleId), {
           titleFormat,
           luckyDay: !!args.luckyday,
@@ -367,6 +390,8 @@ async function main() {
         console.log(`\nArchive it with:  libby archive --title ${titleId}`);
       } else if (command === 'return') {
         // Show what's about to be returned — a typo'd id must not silently return a loan.
+        const { sync } = await load.loans();
+        const { returnTitle } = await load.checkout();
         const { loans } = await sync(client, identity);
         const loan = loans.find((l) => l.id === String(titleId));
         if (!loan) {
@@ -378,16 +403,19 @@ async function main() {
         await returnTitle(client, identity, cardId, String(titleId));
         console.log(`Returned: ${loan.title}`);
       } else if (command === 'hold') {
+        const { placeHold } = await load.checkout();
         const hold = await placeHold(client, identity, cardId, String(titleId));
         const pos = hold?.holdListPosition;
         console.log(`Hold placed on title ${titleId}${pos ? ` (position ${pos})` : ''}.`);
       } else {
         const ok = await confirm(`Cancel hold on title ${titleId}?`, args);
         if (!ok) return console.log('Aborted.');
+        const { cancelHold } = await load.checkout();
         await cancelHold(client, identity, cardId, String(titleId));
         console.log(`Hold cancelled on title ${titleId}.`);
       }
     } catch (e) {
+      const { SentryError } = await load.sentry();
       console.error(`${command} failed: ${e.message}`);
       if (e instanceof SentryError && e.result === 'whoa') {
         console.error('Rate-limited by OverDrive ("whoa"). Stop and retry later.');
@@ -397,6 +425,7 @@ async function main() {
     return;
   }
 
+  const { sync, audiobookLoans, readableLoans } = await load.loans();
   const { loans } = await sync(client, identity);
   // Everything archivable: audiobooks (listen host) + ebooks/magazines (read host).
   const archivable = [...audiobookLoans(loans), ...readableLoans(loans)];
@@ -428,6 +457,8 @@ async function main() {
       console.error('No matching loans to archive.');
       process.exit(1);
     }
+    const { archiveAudiobook } = await load.archive();
+    const { archiveReadable } = await load.archiveRead();
     const ctx = { client, identity, cfg, log: cfg.log };
     const done = [];
     for (const loan of targets) {
@@ -435,6 +466,7 @@ async function main() {
         const archive = loan.type === 'audiobook' ? archiveAudiobook : archiveReadable;
         done.push(await archive(ctx, loan, cfg.out));
       } catch (e) {
+        const { SentryError } = await load.sentry();
         console.error(`FAILED "${loan.title}": ${e.message}`);
         if (e instanceof SentryError && e.result === 'whoa') {
           console.error('Rate-limited by OverDrive ("whoa"). Stop and retry later.');
@@ -447,7 +479,20 @@ async function main() {
   }
 }
 
-main().catch((e) => {
-  console.error(e instanceof SentryError ? `Sentry error: ${e.message}` : e.message || e);
-  process.exit(1);
-});
+// Auto-run only when invoked directly as the CLI; importing this file (tests)
+// must stay side-effect free. realpath() so symlinked bin shims still match.
+const invokedDirectly = (() => {
+  try {
+    return !!process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+})();
+
+if (invokedDirectly) {
+  main().catch(async (e) => {
+    const { SentryError } = await load.sentry();
+    console.error(e instanceof SentryError ? `Sentry error: ${e.message}` : e.message || e);
+    process.exit(1);
+  });
+}
