@@ -54,40 +54,40 @@
   <div class="meta">base commit fc670da (main, includes all perf-trial-20260906 wins) · node v26.7.0 · Apple M4</div>
   <span class="refresh-note">⟳ this page refreshes itself every 5 min</span>
   <div class="tldr">
-    <div class="stat"><b>trial 1 merged</b><span>this trial optimizes on top of fc670da</span></div><div class="stat"><b>6.5 ms</b><span>EPUB zip assembly starting point (was 177)</span></div><div class="stat"><b>33.2 ms</b><span>CLI startup (node floor 24.5 ms) — wave 1 target</span></div><div class="stat"><b>19.4 ms</b><span>cfc1 page decode (was 60) — wave 1 target</span></div><div class="stat"><b>0</b><span>waves adopted so far (campaign just opened)</span></div>
+    <div class="stat"><b>1 wave merged</b><span>CLI startup 32.1 → 26.4 ms (lazy per-command loading)</span></div><div class="stat"><b>6.5 ms</b><span>EPUB zip assembly starting point (was 177 in pre-trial-1)</span></div><div class="stat"><b>26.4 ms</b><span>CLI help startup now — 2 ms above the bare-node floor</span></div><div class="stat"><b>cfc1 closed</b><span>realistic pages decode in 3.4 ms — 19 ms was a fixture artifact (W1B rejected)</span></div><div class="stat"><b>wave 2 planned</b><span>--all loan pipelining + read-path manifest pre-hash</span></div>
   </div>
 </header>
 
 <h2>TL;DR</h2>
-<p><b>Scope.</b> Trial 2 of the continuous performance campaign. Trial 1 (perf-trial-20260906) merged: native CRC32, stored media + level-6 deflate in EPUBs, single-pass in-memory zip, streaming zip writer, lazy payload thunks, hash-while-streaming, keep-alive connection pooling, concurrent part/page/asset downloads, overlapped catalog fetches, latin1 byte loops for cfc1/descramble. This trial hunts the remaining headroom across CLI interface, decode loops, network orchestration, and RAM/storage.</p><p><b>Status.</b> Baseline measured (below). Wave 1 lanes: (A) CLI startup — the import graph costs ~9 ms over the bare-node floor on every command; (B) cfc1 page-blob decode — the last hot CPU loop, looking for a word-at-a-time swap.</p><p><b>How numbers are produced.</b> <code>node --expose-gc perf/bench.mjs</code> medians against a frozen copy of the campaign-start code in <code>perf/baseline/</code>; loop work uses the interleaved-median methodology in <code>perf/loop-showdown.mjs</code>.</p>
+<p><b>Scope.</b> Trial 2 of the continuous performance campaign. Trial 1 (perf-trial-20260906) merged: native CRC32, stored media + level-6 deflate in EPUBs, single-pass in-memory zip, streaming zip writer, lazy payload thunks, hash-while-streaming, keep-alive connection pooling, concurrent part/page/asset downloads, overlapped catalog fetches, latin1 byte loops for cfc1/descramble. This trial hunts the remaining headroom across CLI interface, decode loops, network orchestration, and RAM/storage.</p><p><b>Status.</b> Wave 1 complete: (A) lazy CLI loading merged (help 32.1→26.4 ms); (B) cfc1 u32 swap measured and honestly rejected — the isolated loop wins 1.60× but is ~3% of the pipeline, and the old 19 ms headline was a random-bytes utf8-decode artifact (realistic pages: 3.4 ms). Wave 2 lanes: (C) archive --all loan pipelining + read-path manifest pre-hash; (D) EPUB assembly RAM/storage audit on big fixtures.</p><p><b>How numbers are produced.</b> <code>node --expose-gc perf/bench.mjs</code> medians against a frozen copy of the campaign-start code in <code>perf/baseline/</code>; loop work uses the interleaved-median methodology in <code>perf/loop-showdown.mjs</code>.</p>
 
 <h2>Waves</h2>
 
   <div class="card" id="T2-W1A">
     <div class="card-head">
       <span class="wave-id">T2-W1A</span>
-      <h3>CLI startup — lazy command loading</h3>
-      <span class="badge">planned</span>
-      <span class="dim area">interface (bin/libby.mjs, src/index.mjs)</span>
+      <h3>CLI startup — lazy per-command loading</h3>
+      <span class="badge good">merged</span>
+      <span class="dim area">interface (bin/libby.mjs)</span>
     </div>
-    <p class="change">bin + index import every module (epub, openbook, read, …) before dispatching even `help`. Lazy per-command imports should cut most of the ~9 ms import-graph cost paid by every CLI invocation.</p>
-    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>CLI `help` startup</td><td class="num">33.2 ms (node floor 24.5)</td><td class="num"><b> ms (node floor 24.5)</b></td></tr></table>
-    
-    
-    
+    <p class="change">bin/libby.mjs statically imported all 12 src modules (including the heavy archive/EPUB/openbook/read subgraph) before dispatching any command. Now a `load` map of lazy import() arrows resolves only what the invoked command needs; SentryError is lazy-imported at its 3 catch sites; the COMMANDS/unknown gate still runs before any import. Output text, exit codes, and error behavior byte-identical (diffed against the pre-change binary for help/where/probe/unknown).</p>
+    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>CLI `help` startup (median of 9)</td><td class="num">32.1 ms</td><td class="num"><b class="good">26.4 ms</b> <span class="dim">(18% less, 1.22×)</span></td></tr><tr><td>CLI `where` startup</td><td class="num">32.1 ms</td><td class="num"><b class="good">30 ms</b> <span class="dim">(7% less, 1.07×)</span></td></tr><tr><td>bare `node -e` floor (reference)</td><td class="num"> ms</td><td class="num"><b>24.4 ms</b></td></tr></table>
+    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>~0.05–0.3 ms warm import cost added per command dispatch (net win everywhere; `where` only −2.1 ms because config.mjs itself pulls sentry+http — a config-module split would be needed for more)</li><li>typo risk in the command→module map — pinned by new test/cli-lazy.test.mjs (usage table covers COMMANDS exactly; every command's loaders resolve to the exact functions its branch destructures)</li><li>`where` still pays for https agents at import; left alone deliberately (splitting config.mjs churns the public API for ~2 ms)</li></ul>
+    <p class="verify">✓ npm test 80 pass / 0 fail (78 baseline + 2 new); coordinator re-measured help 26.2 ms; commit 5fe5d0b</p>
+    <p class="dim files">bin/libby.mjs · test/cli-lazy.test.mjs · perf-notes-t2-startup.md</p>
   </div>
   <div class="card" id="T2-W1B">
     <div class="card-head">
       <span class="wave-id">T2-W1B</span>
       <h3>cfc1 page-blob decode — word-at-a-time quad swap</h3>
-      <span class="badge">planned</span>
+      <span class="badge bad">measured, rejected</span>
       <span class="dim area">library (src/read.mjs)</span>
     </div>
-    <p class="change">The adopted latin1+indexOf swap runs ~144 MB/s byte-by-byte. Trial: 4-byte DataView loads/stores to swap quads word-at-a-time, preserving the exact regex-compatible line-terminator semantics (alignment shift after \n \r \u2028 \u2029). Adoption bar: ≥15% with byte-identical outputs.</p>
-    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>cfc1 2.8 MB blob</td><td class="num">19.43 ms</td><td class="num"><b> ms</b></td></tr></table>
-    
-    
-    
+    <p class="change">Built and verified a u32 word-trick swap (view+shift/mask, plus 3 other variants) with byte-identical output on 144 adversarial fixtures (terminators at every offset, pairs gap 0..7, lengths incl. n%4!=0, U+2029 fallback path — the harness even caught a wrong-top-byte bug in the first draft before timing). Verdict: the isolated swap loop runs 1.60x faster (0.533→0.334 ms on 2.8 MB), but the swap is ~3% of the decode pipeline, so end-to-end the best variant manages only 1.01x (random blob) / 1.08x (realistic XHTML) — far under the 15% bar. Not adopted; src/read.mjs untouched; the 6-line change is documented as adopted-ready.</p>
+    <table><tr><th>metric</th><th>before</th><th>after</th></tr><tr><td>swap loop alone, 2.8 MB (median)</td><td class="num">0.53 ms</td><td class="num"><b class="good">0.33 ms</b> <span class="dim">(37% less, 1.6×)</span></td></tr><tr><td>full pipeline, random 2.8 MB blob</td><td class="num">18.11 ms (best variant)</td><td class="num"><b class="good">17.89 ms (best variant)</b> <span class="dim">(1% less, 1.01×)</span></td></tr><tr><td>full pipeline, realistic XHTML blob</td><td class="num">3.39 ms (best variant)</td><td class="num"><b class="good">3.15 ms (best variant)</b> <span class="dim">(7% less, 1.08×)</span></td></tr></table>
+    <p class="dim">Tradeoffs / risks:</p><ul class="tradeoffs"><li>Key finding: the bench headline cfc1 number (19.4 ms) is a fixture artifact — random base64 bytes force Node’s error-tolerant slow utf8 decode, 95% of runtime; realistic ASCII page content decodes in ~3.4 ms where the swap matters even less</li><li>Stage split: base64 ≈ 0.3 ms; utf8 toString dominates random bytes; TextDecoder is identical — no remaining lever in this pipeline worth a wave</li><li>Rejected variants recorded so the next trial never re-runs them: u16 halfword pairs, unrolled byte loop, readUInt32LE/writeUInt32LE (0.15x — method-call overhead)</li></ul>
+    <p class="verify">✓ npm test 80 pass / 0 fail; git diff confirms src/ untouched; evidence in perf/loop-showdown.mjs T2 section + perf-notes-t2-loops.md</p>
+    <p class="dim files">perf/loop-showdown.mjs · perf-notes-t2-loops.md</p>
   </div>
 
 <h2>Baseline measurements (code at fc670da (main, includes all perf-trial-20260906 wins))</h2>
@@ -98,9 +98,9 @@
 <p>This trial runs on branch <code>perf-trial-20260909</code> in worktree <code>../perf-trial-20260909-030719</code>.</p><p>When the owner is happy with the report: from the main checkout run <code>git merge perf-trial-20260909</code> (fast-forward), then re-run <code>npm test</code>.</p><p>Every wave card lists its tradeoffs and the exact verification run. Waves marked <i>measured, rejected</i> were tried and deliberately not adopted.</p>
 
 <h2>Campaign log</h2>
-<table><tr><td class="dim">2026-09-09 03:14</td><td>Wave 1 dispatched: lane A (CLI startup, owns bin/ + src/index.mjs), lane B (cfc1 decode, owns src/read.mjs + perf/loop-showdown.mjs).</td></tr><tr><td class="dim">2026-09-09 03:12</td><td>Full baseline benchmark captured (perf/results-t2-baseline.json); report published and opened in Safari (auto-refresh 5 min).</td></tr><tr><td class="dim">2026-09-09 03:07</td><td>Trial opened. Worktree ../perf-trial-20260909-030719 created from main fc670da. Tests: 78 pass / 0 fail.</td></tr></table>
+<table><tr><td class="dim">2026-09-09 03:58</td><td>T2-W1B closed as measured-rejected: u32 swap 1.60x isolated but ~1% end-to-end; cfc1 headline re-framed (realistic blob 3.4 ms). Evidence committed; src/read.mjs untouched.</td></tr><tr><td class="dim">2026-09-09 03:36</td><td>T2-W1A merged (commit 5fe5d0b): lazy per-command CLI loading — help 32.1→26.4 ms, where 32.1→30.0 ms; tests 80/80; coordinator independently re-measured before committing.</td></tr><tr><td class="dim">2026-09-09 03:14</td><td>Wave 1 dispatched: lane A (CLI startup, owns bin/libby.mjs), lane B (cfc1 decode, owns src/read.mjs + perf/loop-showdown.mjs).</td></tr><tr><td class="dim">2026-09-09 03:12</td><td>Full baseline benchmark captured (perf/results-t2-baseline.json); report published and opened in Safari (auto-refresh 5 min).</td></tr><tr><td class="dim">2026-09-09 03:07</td><td>Trial opened. Worktree ../perf-trial-20260909-030719 created from main fc670da. Tests: 78 pass / 0 fail.</td></tr></table>
 
-<footer>Auto-generated by <code>perf/render.mjs</code> from <code>perf/report-data.json</code> · trial branches <code>perf-trial-20260909*</code> · report last rendered 9/9/2026, 3:11:44 AM</footer>
+<footer>Auto-generated by <code>perf/render.mjs</code> from <code>perf/report-data.json</code> · trial branches <code>perf-trial-20260909*</code> · report last rendered 9/9/2026, 3:30:28 AM</footer>
 </main>
 </body>
 </html>

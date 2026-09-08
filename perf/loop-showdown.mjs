@@ -1,6 +1,10 @@
 // W23 loop showdown: alternative inner loops for cfc1 (src/read.mjs) and
 // descramble (src/openbook.mjs), measured head-to-head in ONE process.
 //
+// T2-W1B extension: word-at-a-time (u32/u16) quad-swap candidates for the cfc1
+// ASCII fast path, an isolated swap-loop microbench, adversarial identity
+// fixtures, and a two-fixture stage split (see perf-notes-t2-loops.md).
+//
 // Every alternative is defined here inline; only winners got promoted into src/.
 // Each run's output is verified identical to the reference. The pre-W23 pipelines
 // are copied inline; src/read.mjs's exported cfc1 is also benched as "current" so
@@ -310,6 +314,219 @@ function descrambleByte(key, data) {
   return bytes.toString('latin1');
 }
 
+// ---- T2-W1B: quad-swap inner-loop candidates ------------------------------------
+//
+// All candidates mutate the latin1 buffer in place, exactly like the current clean
+// path: bytes m0<->m3 of every aligned 4-byte group, tail bytes (n % 4) untouched.
+// The u32 word trick: LE word w = m3<<24|m2<<16|m1<<8|m0, so
+//   w' = (w >>> 24) | (w & 0x00ffff00) | (w << 24)
+// (old m3 lands in byte 0, m1/m2 stay, old m0 — w<<24 keeps only the low byte —
+// lands in byte 3) replaces two byte loads + two byte stores with one word
+// load/store + 5 bit ops.
+
+function swapBytes(buf, n) {
+  for (let i = 0; i + 4 <= n; i += 4) {
+    const t = buf[i];
+    buf[i] = buf[i + 3];
+    buf[i + 3] = t;
+  }
+}
+
+// Uint32Array view + shift/mask. Alignment guard: Buffer byteOffset must be a
+// multiple of 4 for the view (it always is for Buffer.from(string), but guard
+// promotion against pool offsets anyway).
+function swapU32View(buf, n) {
+  if ((buf.byteOffset & 3) !== 0) return swapBytes(buf, n);
+  const u32 = new Uint32Array(buf.buffer, buf.byteOffset, n >> 2);
+  for (let k = 0; k < u32.length; k++) {
+    const w = u32[k];
+    u32[k] = (w >>> 24) | (w & 0x00ffff00) | (w << 24);
+  }
+}
+
+// Same math through Buffer read/write methods (tests method-call overhead).
+function swapU32Methods(buf, n) {
+  for (let i = 0; i + 4 <= n; i += 4) {
+    const w = buf.readUInt32LE(i);
+    buf.writeUInt32LE((w >>> 24) | (w & 0x00ffff00) | (w << 24), i);
+  }
+}
+
+// Uint32Array view, two words per iteration (loop overhead / 2).
+function swapU32Unrolled(buf, n) {
+  if ((buf.byteOffset & 3) !== 0) return swapBytes(buf, n);
+  const u32 = new Uint32Array(buf.buffer, buf.byteOffset, n >> 2);
+  const len = u32.length;
+  let k = 0;
+  for (; k + 1 < len; k += 2) {
+    let w = u32[k];
+    u32[k] = (w >>> 24) | (w & 0x00ffff00) | (w << 24);
+    w = u32[k + 1];
+    u32[k + 1] = (w >>> 24) | (w & 0x00ffff00) | (w << 24);
+  }
+  if (k < len) {
+    const w = u32[k];
+    u32[k] = (w >>> 24) | (w & 0x00ffff00) | (w << 24);
+  }
+}
+
+// Uint16Array halfword trick: per quad, w0 = m1<<8|m0 and w1 = m3<<8|m2 become
+//   u16'[0] = m1<<8|m3 = (w0 & 0xff00) | (w1 >>> 8)
+//   u16'[1] = m0<<8|m2 = ((w0 & 0x00ff) << 8) | (w1 & 0x00ff)
+// (a lone trailing halfword, n % 4 == 2, stays untouched, matching swapBytes).
+function swapU16Pairs(buf, n) {
+  if ((buf.byteOffset & 1) !== 0) return swapBytes(buf, n);
+  const u16 = new Uint16Array(buf.buffer, buf.byteOffset, n >> 1);
+  const len = u16.length;
+  for (let k = 0; k + 1 < len; k += 2) {
+    const a = u16[k];
+    const b = u16[k + 1];
+    u16[k] = (a & 0xff00) | (b >>> 8);
+    u16[k + 1] = ((a & 0x00ff) << 8) | (b & 0x00ff);
+  }
+}
+
+// Byte loop unrolled x2 (8 bytes/iteration) with an exact tail.
+function swapBytesUnroll8(buf, n) {
+  let i = 0;
+  for (; i + 8 <= n; i += 8) {
+    let t = buf[i];
+    buf[i] = buf[i + 3];
+    buf[i + 3] = t;
+    t = buf[i + 4];
+    buf[i + 4] = buf[i + 7];
+    buf[i + 7] = t;
+  }
+  for (; i + 4 <= n; i += 4) {
+    const t = buf[i];
+    buf[i] = buf[i + 3];
+    buf[i + 3] = t;
+  }
+}
+
+const T2_SWAPS = {
+  'byte loop (current)': swapBytes,
+  'u32 view +shift/mask': swapU32View,
+  'u32 readUInt32LE/write': swapU32Methods,
+  'u32 view unrolled x2': swapU32Unrolled,
+  'u16 halfword pairs': swapU16Pairs,
+  'byte unrolled x2': swapBytesUnroll8,
+};
+
+// Full cfc1 pipeline with a swappable clean-path loop; the \n/\r branch stays the
+// proven byte skip-loop for every candidate (only the clean inner loop varies).
+function cfc1T2(blob, swapFn) {
+  if (!isAscii(blob)) return cfc1PreW23(blob);
+  const buf = Buffer.from(blob, 'latin1');
+  const n = buf.length;
+  if (n >= 4 && buf.indexOf(10) === -1 && buf.indexOf(13) === -1) {
+    swapFn(buf, n);
+  } else {
+    let i = 0;
+    while (i + 4 <= n) {
+      let bad = -1;
+      if (buf[i] === 10 || buf[i] === 13) bad = i;
+      else if (buf[i + 1] === 10 || buf[i + 1] === 13) bad = i + 1;
+      else if (buf[i + 2] === 10 || buf[i + 2] === 13) bad = i + 2;
+      else if (buf[i + 3] === 10 || buf[i + 3] === 13) bad = i + 3;
+      if (bad !== -1) {
+        i = bad + 1;
+        continue;
+      }
+      const t = buf[i];
+      buf[i] = buf[i + 3];
+      buf[i + 3] = t;
+      i += 4;
+    }
+  }
+  return Buffer.from(buf.toString('latin1'), 'base64').toString('utf8');
+}
+
+// Adversarial identity: every T2 candidate must byte-match the src export on
+// random ASCII (clean + n%4!=0), \n/\r at every offset, terminator pairs at
+// gaps 0..7, all-terminator strings, and one non-ASCII fallback fixture.
+function verifyT2Identity(swaps, srcCfc1) {
+  const fixtures = [];
+  const printable = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+  let seed = 0x2545f491;
+  const rnd = () => (seed = (seed * 1664525 + 1013904223) >>> 0);
+  const asciiOf = (len) => {
+    let s = '';
+    for (let i = 0; i < len; i++) s += printable[rnd() % printable.length];
+    return s;
+  };
+  // random clean ASCII, lengths around 4-boundaries incl. n%4 != 0
+  for (const len of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 16, 63, 64, 65, 255, 256, 257, 4095, 4096, 4097]) {
+    fixtures.push(asciiOf(len));
+  }
+  // \n and \r at every offset of a 48-char base (covers window offsets 0..7 and beyond)
+  for (const term of ['\n', '\r']) {
+    for (let p = 0; p < 48; p++) {
+      const s = asciiOf(48);
+      fixtures.push(s.slice(0, p) + term + s.slice(p + 1));
+    }
+  }
+  // terminator pairs at gaps 0..7 (forced re-alignment twice inside overlapping windows)
+  for (let gap = 0; gap <= 7; gap++) {
+    const s = asciiOf(64);
+    fixtures.push(s.slice(0, 20) + '\n' + s.slice(21, 21 + gap) + '\r' + s.slice(22 + gap));
+  }
+  // terminators in the final partial-window region, lengths n%4 != 0
+  for (const len of [5, 6, 7, 9, 10, 11]) {
+    fixtures.push(asciiOf(len - 1) + '\n');
+    fixtures.push('\r' + asciiOf(len - 1));
+  }
+  // all-terminator strings
+  for (const len of [4, 5, 7, 8, 64]) fixtures.push('\n'.repeat(len));
+  fixtures.push('\r'.repeat(37));
+  // one fixture through the non-ASCII fallback (U+2029 hits the u16 path only)
+  fixtures.push(asciiOf(40).slice(0, 12) + '\u2029' + asciiOf(40).slice(13));
+
+  const failures = [];
+  for (const [name, swapFn] of Object.entries(swaps)) {
+    for (const [idx, fx] of fixtures.entries()) {
+      const got = cfc1T2(fx, swapFn);
+      const want = srcCfc1(fx);
+      if (got !== want) {
+        failures.push(`${name} fixture #${idx} (len ${fx.length}): output differs from src cfc1`);
+        break;
+      }
+    }
+  }
+  if (failures.length) throw new Error(`T2 identity FAILED:\n  ${failures.join('\n  ')}`);
+  return { fixtures: fixtures.length, variants: Object.keys(swaps).length, passed: true };
+}
+
+// Isolated swap-loop microbench: fresh copy per run (in-place mutation), output
+// verified with Buffer.equals against a frozen reference outside the timed window.
+function benchSwapLoops(swaps, src, { warm = 4, runs = 15 } = {}) {
+  const ref = Buffer.from(src);
+  swapBytes(ref, ref.length);
+  const names = Object.keys(swaps);
+  for (const name of names) {
+    for (let w = 0; w < warm; w++) {
+      const buf = Buffer.from(src);
+      swaps[name](buf, buf.length);
+      if (!buf.equals(ref)) throw new Error(`swap ${name}: output mismatch during warmup`);
+    }
+  }
+  const samples = names.map(() => []);
+  for (let r = 0; r < runs; r++) {
+    names.forEach((name, i) => {
+      const fn = swaps[name];
+      const t = process.hrtime.bigint();
+      const buf = Buffer.from(src);
+      fn(buf, buf.length);
+      samples[i].push(Number(process.hrtime.bigint() - t) / 1e6);
+      if (!buf.equals(ref)) throw new Error(`swap ${name}: output mismatch`);
+    });
+  }
+  return names.map((name, i) => {
+    const s = samples[i].sort((a, b) => a - b);
+    return { name, median_ms: +s[(runs >> 1)].toFixed(3) };
+  });
+}
+
 // ---- harness -------------------------------------------------------------------
 
 const time1 = (fn) => {
@@ -372,6 +589,55 @@ console.log(`blob ${(BLOB.length / 1e6).toFixed(2)} MB, data ${(DESC_DATA.length
 
 const detection_ms = benchDetection();
 
+// T2-W1B: adversarial identity FIRST — nothing below runs if a variant drifts.
+const t2Identity = verifyT2Identity(T2_SWAPS, cfc1Src);
+
+// Realistic-content fixture: same char count, but the decoded bytes are mostly
+// ASCII XHTML instead of random garbage, so the utf8 stage runs its fast path.
+const REAL_CHUNK = Buffer.from(
+  '<div class="ch"><p>Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.</p></div>\n',
+);
+const REAL_RAW = Buffer.alloc(2_100_000);
+for (let o = 0; o < REAL_RAW.length; o += REAL_CHUNK.length) REAL_CHUNK.copy(REAL_RAW, o);
+const REAL_BLOB = REAL_RAW.toString('base64');
+
+// Stage split: where does the cfc1 millisecond actually go, per fixture?
+const time1s = (fn) => {
+  const t = process.hrtime.bigint();
+  const r = fn();
+  return [Number(process.hrtime.bigint() - t) / 1e6, r];
+};
+function stageSplit(blob) {
+  const stages = {
+    'gate isAscii': () => Buffer.byteLength(blob, 'utf8') === blob.length,
+    'Buffer.from latin1': () => Buffer.from(blob, 'latin1'),
+    'indexOf x2 (\\n\\r scan)': () => {
+      const buf = Buffer.from(blob, 'latin1');
+      return [buf.indexOf(10), buf.indexOf(13)];
+    },
+    'swap loop (byte)': () => {
+      const buf = Buffer.from(blob, 'latin1');
+      swapBytes(buf, buf.length);
+      return buf;
+    },
+    'toString latin1': () => Buffer.from(blob, 'latin1').toString('latin1'),
+    'Buffer.from base64': () => Buffer.from(blob, 'base64'),
+    'utf8 toString (incl b64)': () => Buffer.from(blob, 'base64').toString('utf8'),
+    'TextDecoder utf8 (incl b64)': () => new TextDecoder().decode(Buffer.from(blob, 'base64')),
+  };
+  const out = {};
+  for (const [name, fn] of Object.entries(stages)) {
+    for (let w = 0; w < 3; w++) fn(blob);
+    const s = [];
+    for (let r = 0; r < 11; r++) s.push(time1s(fn)[0]);
+    s.sort((a, b) => a - b);
+    out[name] = +s[5].toFixed(2);
+  }
+  return out;
+}
+const stageSplitRandom = stageSplit(BLOB);
+const stageSplitReal = stageSplit(REAL_BLOB);
+
 const cfc1Variants = [
   { name: 'pre-W23 (u16 swapQuads pipeline)', fn: cfc1PreW23 },
   { name: 'current (src/read.mjs, W23 adopted)', fn: cfc1Src },
@@ -401,6 +667,17 @@ for (const [kname, key] of Object.entries(KEYS)) {
   descrambleResults[kname] = benchSet(impls, descrambleCurrent(key, DESC_DATA));
 }
 
+// T2-W1B: isolated swap-loop microbench + full-pipeline runs on both fixtures.
+const t2SwapLoop = benchSwapLoops(T2_SWAPS, Buffer.from(BLOB, 'latin1'));
+const t2PipelineRandom = benchSet(
+  Object.entries(T2_SWAPS).map(([name, swapFn]) => ({ name: `T2 ${name}`, fn: () => cfc1T2(BLOB, swapFn) })),
+  cfc1Expected,
+);
+const t2PipelineReal = benchSet(
+  Object.entries(T2_SWAPS).map(([name, swapFn]) => ({ name: `T2 ${name}`, fn: () => cfc1T2(REAL_BLOB, swapFn) })),
+  cfc1Src(REAL_BLOB),
+);
+
 console.log(
   JSON.stringify(
     {
@@ -408,6 +685,14 @@ console.log(
       detection_cost_ms_on_blob: detection_ms,
       cfc1_blob_2_8MB: cfc1Results,
       descramble_2MB: descrambleResults,
+      t2_w1b: {
+        identity: t2Identity,
+        swap_loop_only_2_8MB: t2SwapLoop,
+        full_pipeline_random_blob: t2PipelineRandom,
+        full_pipeline_realistic_blob: t2PipelineReal,
+        stage_split_random_bytes: stageSplitRandom,
+        stage_split_realistic_xhtml: stageSplitReal,
+      },
     },
     null,
     2,
