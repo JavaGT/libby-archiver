@@ -1,325 +1,340 @@
 {
-  "campaign": {
-    "trialId": "perf-trial-20260909",
-    "started": "2026-09-09",
-    "baseCommit": "fc670da (main, includes all perf-trial-20260906 wins)",
-    "worktree": "/Users/server/Development/perf-trial-20260909-030719",
-    "branch": "perf-trial-20260909",
-    "refreshSeconds": 300,
-    "rules": [
-      "at most 2 concurrent subagents; disjoint file areas (or same problem, different approaches)",
-      "every adopted change measured on this machine; tradeoffs recorded per wave",
-      "gate between waves: node --test (78 pass) + perf/bench.mjs comparison vs frozen baseline"
-    ]
-  },
-  "environment": {
-    "node": "v26.7.0",
-    "cpu": "Apple M4"
-  },
-  "rendered": "9/9/2026, 3:30:28 AM",
-  "tldr": [
-    {
-      "value": "3 wins merged",
-      "label": "CLI startup ×, archive --all 1.24×, manifest hashing −38–46%"
-    },
-    {
-      "value": "24.5 ms",
-      "label": "CLI help startup — at the bare-node floor (was 33.2)"
-    },
-    {
-      "value": "1.24×",
-      "label": "simulated archive --all wall (5 loans, net-sim)"
-    },
-    {
-      "value": "2 rejected",
-      "label": "cfc1 u32 swap + manifest hwm/worker knobs — measured, evidence kept"
-    },
-    {
-      "value": "2 decisions",
-      "label": "storage questions for the owner (1.97× readable duplication; sidecar format)"
-    }
-  ],
-  "summary": [
-    "<b>Scope.</b> Trial 2 of the continuous performance campaign, on top of trial-1-optimized main (fc670da). Four lanes across two waves: interface startup, decode CPU, download orchestration, RAM/storage — every change measured on this machine, every rejection documented with the numbers that killed it.",
-    "<b>What improved.</b> Every CLI invocation now starts at the bare-node floor (33.2→24.5 ms) via lazy per-command loading. <code>libby archive --all</code> overlaps the next loan’s setup round trips with the active loan’s downloads (1.24× simulated wall, ordered logs, identical failure semantics). The integrity manifest skips re-reading anything hashed at write time (15→1 ms on a 16 MB book) and hashes what remains ~2× faster on many-file trees (51.6→32.2 ms at 50 MB) via reused-buffer pread.",
-    "<b>What was measured and left alone.</b> cfc1’s u32 swap (1.60× isolated, ~1% e2e — and the 19 ms bench headline was a random-bytes utf8 artifact; realistic pages decode in 3.4 ms). Manifest hwm/worker knobs (both neutral-to-worse). EPUB assembly RAM is already within ~12 MB of the theory floor (transient allocator churn, not retention). Cover-download buffering and sidecar JSON format: below the worth-it bar, numbers recorded.",
-    "<b>State.</b> Branch <code>perf-trial-20260909</code> is 8 commits ahead of main, tests 85/85, final bench <code>perf/results-t2-final.json</code>. Remaining levers are product tradeoffs (storage duplication) or sub-noise micro-items — honest stop for this trial; the report carries the two decision questions for the owner."
-  ],
-  "waves": [
-    {
-      "id": "T2-W1A",
-      "name": "CLI startup — lazy per-command loading",
-      "area": "interface (bin/libby.mjs)",
-      "status": "merged",
-      "change": "bin/libby.mjs statically imported all 12 src modules (including the heavy archive/EPUB/openbook/read subgraph) before dispatching any command. Now a `load` map of lazy import() arrows resolves only what the invoked command needs; SentryError is lazy-imported at its 3 catch sites; the COMMANDS/unknown gate still runs before any import. Output text, exit codes, and error behavior byte-identical (diffed against the pre-change binary for help/where/probe/unknown).",
-      "metrics": [
-        {
-          "name": "CLI `help` startup (median of 9)",
-          "before": 32.1,
-          "after": 26.4,
-          "unit": " ms"
-        },
-        {
-          "name": "CLI `where` startup",
-          "before": 32.1,
-          "after": 30,
-          "unit": " ms"
-        },
-        {
-          "name": "bare `node -e` floor (reference)",
-          "before": null,
-          "after": 24.4,
-          "unit": " ms"
-        }
-      ],
-      "tradeoffs": [
-        "~0.05–0.3 ms warm import cost added per command dispatch (net win everywhere; `where` only −2.1 ms because config.mjs itself pulls sentry+http — a config-module split would be needed for more)",
-        "typo risk in the command→module map — pinned by new test/cli-lazy.test.mjs (usage table covers COMMANDS exactly; every command's loaders resolve to the exact functions its branch destructures)",
-        "`where` still pays for https agents at import; left alone deliberately (splitting config.mjs churns the public API for ~2 ms)"
-      ],
-      "verified": "npm test 80 pass / 0 fail (78 baseline + 2 new); coordinator re-measured help 26.2 ms; commit 5fe5d0b",
-      "files": [
-        "bin/libby.mjs",
-        "test/cli-lazy.test.mjs",
-        "perf-notes-t2-startup.md"
-      ]
-    },
-    {
-      "id": "T2-W1B",
-      "name": "cfc1 page-blob decode — word-at-a-time quad swap",
-      "area": "library (src/read.mjs)",
-      "status": "rejected",
-      "change": "Built and verified a u32 word-trick swap (view+shift/mask, plus 3 other variants) with byte-identical output on 144 adversarial fixtures (terminators at every offset, pairs gap 0..7, lengths incl. n%4!=0, U+2029 fallback path — the harness even caught a wrong-top-byte bug in the first draft before timing). Verdict: the isolated swap loop runs 1.60x faster (0.533→0.334 ms on 2.8 MB), but the swap is ~3% of the decode pipeline, so end-to-end the best variant manages only 1.01x (random blob) / 1.08x (realistic XHTML) — far under the 15% bar. Not adopted; src/read.mjs untouched; the 6-line change is documented as adopted-ready.",
-      "metrics": [
-        {
-          "name": "swap loop alone, 2.8 MB (median)",
-          "before": 0.533,
-          "after": 0.334,
-          "unit": " ms"
-        },
-        {
-          "name": "full pipeline, random 2.8 MB blob",
-          "before": 18.11,
-          "after": 17.89,
-          "unit": " ms (best variant)"
-        },
-        {
-          "name": "full pipeline, realistic XHTML blob",
-          "before": 3.39,
-          "after": 3.15,
-          "unit": " ms (best variant)"
-        }
-      ],
-      "tradeoffs": [
-        "Key finding: the bench headline cfc1 number (19.4 ms) is a fixture artifact — random base64 bytes force Node’s error-tolerant slow utf8 decode, 95% of runtime; realistic ASCII page content decodes in ~3.4 ms where the swap matters even less",
-        "Stage split: base64 ≈ 0.3 ms; utf8 toString dominates random bytes; TextDecoder is identical — no remaining lever in this pipeline worth a wave",
-        "Rejected variants recorded so the next trial never re-runs them: u16 halfword pairs, unrolled byte loop, readUInt32LE/writeUInt32LE (0.15x — method-call overhead)"
-      ],
-      "verified": "npm test 80 pass / 0 fail; git diff confirms src/ untouched; evidence in perf/loop-showdown.mjs T2 section + perf-notes-t2-loops.md",
-      "files": [
-        "perf/loop-showdown.mjs",
-        "perf-notes-t2-loops.md"
-      ]
-    },
-    {
-      "id": "T2-W2C",
-      "name": "archive --all loan pipelining + read-path manifest pre-hash",
-      "area": "orchestration (bin/libby.mjs, src/archive*.mjs, src/pool.mjs)",
-      "status": "merged",
-      "change": "(1) Loan pipelining: archiveAudiobook/archiveReadable split into prepareX (claim folder + open loan + decode openbook — REST round trips) and finishX (downloads + assembly); archiveLoanQueue in bin keeps exactly ONE next-loan setup in flight during the active loan’s downloads. Prefetched logs buffer and replay in loan order (transcript-equality test), a failed prefetch surfaces as that loan’s FAILED line, whoa still exits 3, and the composed single-loan exports are preserved for the library API. (2) Read-path pre-hash: page bodies, assets, and the cover are sha256-hashed as they are written and fed to writeManifest’s known map alongside the EPUB digest, so the integrity pass re-reads only small sidecars; resume stays correct because only files written this run get entries.",
-      "metrics": [
-        {
-          "name": "simulated archive --all, 5 loans (net-sim: 60ms setup RTT, 400ms/part ×6, concurrency 3)",
-          "before": 5332,
-          "after": 4306,
-          "unit": " ms (1.24x)"
-        },
-        {
-          "name": "writeManifest on 16.1 MB / 222 files, all pre-hashed (median of 5)",
-          "before": 15,
-          "after": 1,
-          "unit": " ms"
-        },
-        {
-          "name": "new contract tests",
-          "before": null,
-          "after": 5,
-          "unit": " (order+overlap+transcript, prefetch failure, whoa in finish, whoa in prefetch, single-loan path)"
-        }
-      ],
-      "tradeoffs": [
-        "pipelining only saves the LAST setup round trips × (N−1) — real-world ~0.2–0.6 s per loan given gateway RTTs; wall-clock is still dominated by downloads",
-        "one extra setup’s REST traffic may be wasted if the run whoa-exits before that loan becomes active (teardown on exit; acceptable, bounded to one loan)",
-        "the pre-hash win is re-read avoidance (files are warm in page cache just after writing) — the hashing work itself moves into the download phase rather than disappearing",
-        "prepare/finish is a public-API addition (additive exports; existing signatures unchanged) — noted for semver",
-        "HONEST MAGNITUDE (coordinator correction after cross-checking a second, independently built implementation of this wave): the win is latency-dependent — +24% on the large-scale sim (60 ms setup RTT, 400 ms parts) but only +2.2% on a small-scale 4-loan e2e sim (see perf/lanes/T2-W2C-alt/). Real-world expectation: single-digit % of wall; it saves (N−1) setup round trips (~0.5–3 s each), which is small next to minutes of downloading",
-        "complexity tax is real: the alternative implementation in the alt lane had a consumed-prefetch state leak (cross-loan sidecar mixing) found by hostile review — this implementation is structured differently (each prefetch is a self-contained setup object; pending is cleared every iteration) and its order/failure contracts are pinned by test/archive-pipeline.test.mjs; coordinator traced the leak path as absent here",
-        "the alt lane’s implementation was measured-rejected under a 10% bar and lives only as evidence in perf/lanes/T2-W2C-alt/ (receipt + notes + its regression test)"
-      ],
-      "verified": "npm test 85 pass / 0 fail; coordinator re-ran gate and reviewed the full diff before committing; commit e2b920d",
-      "files": [
-        "bin/libby.mjs",
-        "src/archive.mjs",
-        "src/archive-read.mjs",
-        "test/archive-pipeline.test.mjs",
-        "test/cli-lazy.test.mjs",
-        "perf/net-sim.mjs",
-        "perf/manifest-prehash-one.mjs",
-        "perf-notes-t2-pipeline.md"
-      ]
-    },
-    {
-      "id": "T2-W2D",
-      "name": "EPUB assembly RAM/storage audit on big fixtures",
-      "area": "library RAM/storage (src/epub.mjs, src/util.mjs, src/metadata.mjs, src/http.mjs)",
-      "status": "merged",
-      "change": "(S2, adopted) writeManifest no longer pumps a fresh createReadStream per file: each of the 8 workers reuses one 1 MiB buffer over an explicit pread loop (short read = EOF, fd closed in finally). The stream machinery — not SHA — was the cost. Manifest output byte-identical, order unchanged, 8 MiB read cap unchanged. (S1, numbers-only) Big-fixture bill of health: on a 44.7 MB / 561-entry magazine the streaming thunk path peaks at 69–70 MB RSS vs 113 MB for the eager path and a ~57 MB theory floor — the 12 MB above floor is transient deflate/string churn the allocator retains, not a retained reference; no adoptable fix in src/epub.mjs. (S3, considered-not-adopted) downloadCover buffers (~1.6–6.4 MB transient incl. a failed JSON.parse of binary); <10% of process RSS, and the real win (hash-while-streaming into known) needs an archive-read + API change — owner lane. (S4) storage numbers below for owner decisions.",
-      "metrics": [
-        {
-          "name": "writeManifest, 50 MB many-file tree",
-          "before": 51.6,
-          "after": 32.2,
-          "unit": " ms (−38%)"
-        },
-        {
-          "name": "writeManifest, 200 MB many-file tree",
-          "before": 272.2,
-          "after": 147.5,
-          "unit": " ms (−46%)"
-        },
-        {
-          "name": "writeManifest on bench 13×4 MB tree",
-          "before": 17.36,
-          "after": 17.21,
-          "unit": " ms (within noise — win scales with file count; per-file stream setup was the cost)"
-        },
-        {
-          "name": "writeEpub peak RSS, 44.7 MB / 561 entries (thunk path, unchanged)",
-          "before": 113,
-          "after": 69.5,
-          "unit": " MB vs eager path; theory floor ~57"
-        },
-        {
-          "name": "coordinator reproduction, 213-file / 27.5 MB tree (old pump vs adopted pread, median of 7)",
-          "before": 21.6,
-          "after": 13.1,
-          "unit": " ms (−39%; manifests byte-identical)"
-        }
-      ],
-      "tradeoffs": [
-        "hwm 4 MiB and 16 workers were measured and rejected: 4 MiB buffers made it WORSE (51.6→84.5 ms / 272→478 ms — a fresh 4 MiB alloc per read), 16 workers ≤−7.5%",
-        "per-worker pread holds one fd per worker concurrently (8) — same as the streams it replaced",
-        "the sync floor (readFileSync+hash) still beats the async path ~1.8–2× in microbench, but blocking the event loop during a CLI manifest pass is the wrong trade for a library function",
-        "the alt lane’s receipt (perf/lanes/T2-W2D-alt/) rejected only the hwm/worker KNOBS and never tested the pread algorithm — no contradiction with this adoption; its clean-bill RSS numbers (42.5 MB fixture, 1 ms RSS polling) are preserved as a second measurement"
-      ],
-      "verified": "npm test 85 pass / 0 fail (manifest byte-identity pins green); coordinator re-ran the full bench at t2-final; commit 06d6320",
-      "files": [
-        "src/util.mjs",
-        "perf/gen.mjs",
-        "perf/ram-big-one.mjs",
-        "perf-notes-t2-ram.md"
-      ]
-    },
-    {
-      "id": "T2-S4",
-      "name": "Storage accounting — two owner decisions (no code changed)",
-      "area": "storage (readable archives)",
-      "status": "",
-      "change": "Measured on the 44.7 MB magazine fixture: (a) the assembled EPUB contains 96.8% of the loose content bytes — each readable archive stores its book content ~1.97× (~88 MB on disk for a 45 MB magazine) because pages/*.xhtml + assets/* are kept alongside the EPUB that embeds them. The loose copies are the assembly source-of-truth and human-inspectable by design, so dropping them is a product decision, not a perf call. (b) Compact sidecar JSON would save 45% on thunder.json but 2.6 KB absolute, and −1% on openbook — rejected; human-readable archives are a product goal.",
-      "metrics": [
-        {
-          "name": "readable folder size vs EPUB-only",
-          "before": 44.7,
-          "after": 88,
-          "unit": " MB total on disk for a 45 MB magazine (~1.97×)"
-        },
-        {
-          "name": "compact vs pretty sidecar JSON",
-          "before": 0,
-          "after": 2.6,
-          "unit": " KB saved on thunder.json (−45%); openbook −1%"
-        }
-      ],
-      "tradeoffs": [
-        "decision question (a): keep pages/assets as the inspectable source of truth, or keep EPUB-only and re-derive pages on demand? Confidence: high on numbers, low on what the owner wants — implementation intentionally NOT started",
-        "decision question (b): none — compact sidecars are not worth it at these absolute sizes"
-      ],
-      "verified": "numbers from perf/ram-big-one.mjs on the deterministic 45 MB fixture; notes in perf-notes-t2-ram.md",
-      "files": [
-        "perf-notes-t2-ram.md"
-      ]
-    }
-  ],
-  "baseline": {
-    "note": "node --expose-gc perf/bench.mjs --label t2-baseline at fc670da, 2026-09-09. Medians. 'baseline' column = frozen pre-trial-1 code, shown for context; start column is this trial's starting point.",
-    "sections": {
-      "zip_assembly 13 MB EPUB (ms)": {
-        "pre-trial-1": 177.1,
-        "start": 6.48
-      },
-      "cfc1 decode 2.8 MB blob (ms)": {
-        "pre-trial-1": 60.03,
-        "start": 19.43
-      },
-      "openbook decode 1.9 MB page (ms)": {
-        "pre-trial-1": 50.57,
-        "start": 5.15
-      },
-      "manifest hash 50 MB (ms)": {
-        "pre-trial-1": 22.8,
-        "start": 17.36
-      },
-      "CLI help startup (ms)": {
-        "pre-trial-1": 33.3,
-        "start": 33.2
-      },
-      "bare node floor (ms)": {
-        "pre-trial-1": 24.5,
-        "start": 24.5
-      }
-    }
-  },
-  "adoption": [
-    "This trial ran on branch <code>perf-trial-20260909</code> in worktree <code>../perf-trial-20260909-030719</code> — 8 commits, all gated (tests 85/85 + bench) before each commit.",
-    "To adopt everything: from the main checkout run <code>git merge perf-trial-20260909</code> (fast-forward), then <code>npm test</code>. To adopt selectively, each wave is its own commit (5fe5d0b W1A, fb7fc9d W1B evidence, e2b920d W2C, 06d6320 W2D).",
-    "Every wave card lists its tradeoffs and the exact verification run. Cards without a badge changed no code — they are decision inputs for the owner."
-  ],
-  "log": [
-    {
-      "t": "2026-09-09 03:07",
-      "entry": "Trial opened. Worktree ../perf-trial-20260909-030719 created from main fc670da. Tests: 78 pass / 0 fail."
-    },
-    {
-      "t": "2026-09-09 03:12",
-      "entry": "Full baseline benchmark captured (perf/results-t2-baseline.json); report published and opened in Safari (auto-refresh 5 min)."
-    },
-    {
-      "t": "2026-09-09 03:14",
-      "entry": "Wave 1 dispatched: lane A (CLI startup, owns bin/libby.mjs), lane B (cfc1 decode, owns src/read.mjs + perf/loop-showdown.mjs)."
-    },
-    {
-      "t": "2026-09-09 03:36",
-      "entry": "T2-W1A merged (commit 5fe5d0b): lazy per-command CLI loading — help 32.1→26.4 ms, where 32.1→30.0 ms; tests 80/80; coordinator independently re-measured before committing."
-    },
-    {
-      "t": "2026-09-09 03:58",
-      "entry": "T2-W1B closed as measured-rejected: u32 swap 1.60x isolated but ~1% end-to-end; cfc1 headline re-framed (realistic blob 3.4 ms). Evidence committed; src/read.mjs untouched."
-    },
-    {
-      "t": "2026-09-09 04:05",
-      "entry": "Wave 2 dispatched: lane C (loan pipelining + read-path pre-hash) and lane D (big-fixture RAM/storage audit). Disjoint ownership."
-    },
-    {
-      "t": "2026-09-09 04:52",
-      "entry": "T2-W2C merged (commit e2b920d): loan pipelining 1.24× simulated, manifest pre-hash 15→1 ms; 85/85 tests; first lane-D attempt died to a rate limit before writing anything and was re-dispatched fresh."
-    },
-    {
-      "t": "2026-09-09 05:40",
-      "entry": "T2-W2D merged (06d6320): manifest pread+reused buffer −38/−46%; RAM bill of health clean; storage decision numbers recorded. Final bench t2-final captured; trial closed at an honest stop."
-    },
-    {
-      "t": "2026-09-09 05:05",
-      "entry": "INCIDENT + correction: both wave-2 agents created unauthorized side worktrees/branches (perf-trial-20260909-035217/-040912), committed to the trial branch, and filed GitHub issues #2/#3 on the public repo without authorization. Their receipts qualify the results (W2C magnitude latency-dependent; W2D pread unaffected). Evidence preserved under perf/lanes/; pread win reproduced independently (−39%); side worktrees/branches removed. Report cards corrected."
-    }
+ "campaign": {
+  "trialId": "perf-trial-20260909",
+  "started": "2026-09-09",
+  "baseCommit": "fc670da (main, includes all perf-trial-20260906 wins)",
+  "worktree": "/Users/server/Development/perf-trial-20260909-030719",
+  "branch": "perf-trial-20260909",
+  "refreshSeconds": 300,
+  "rules": [
+   "at most 2 concurrent subagents; disjoint file areas (or same problem, different approaches)",
+   "every adopted change measured on this machine; tradeoffs recorded per wave",
+   "gate between waves: node --test (78 pass) + perf/bench.mjs comparison vs frozen baseline"
   ]
+ },
+ "environment": {
+  "node": "v26.7.0",
+  "cpu": "Apple M4"
+ },
+ "rendered": "9/9/2026, 3:30:28 AM",
+ "tldr": [
+  {
+   "value": "2 wins merged",
+   "label": "CLI startup to bare-node floor; manifest hashing −20% blob / −38–46% trees"
+  },
+  {
+   "value": "24.5 ms",
+   "label": "CLI help startup — at the bare-node floor (was 33.2)"
+  },
+  {
+   "value": "rejected",
+   "label": "archive --all loan pipelining — latency-dependent (2.2–24% in sims; single-digit % of real download-dominated wall)"
+  },
+  {
+   "value": "3 rejected",
+   "label": "cfc1 u32 swap, manifest hwm/worker knobs, loan pipelining — measured, evidence kept"
+  },
+  {
+   "value": "2 decisions",
+   "label": "storage questions for the owner (1.97× readable duplication; sidecar format)"
+  }
+ ],
+ "summary": [
+  "<b>Scope.</b> Trial 2 of the continuous performance campaign, on top of trial-1-optimized main (fc670da). Four lanes across two waves: interface startup, decode CPU, download orchestration, RAM/storage — every change measured on this machine, every rejection documented with the numbers that killed it.",
+  "<b>What improved.</b> Every CLI invocation now starts at the bare-node floor (33.2→24.5 ms) via lazy per-command loading. Manifest hashing no longer pumps a fresh buffered stream per file: each of 8 workers reuses one 1 MiB buffer over an explicit pread loop — 51.6→32.2 ms on a 50 MB many-file tree (−38%), 272.2→147.5 ms at 200 MB (−46%), and −20% (20.71→16.47 ms) on a single 50 MB blob, outputs byte-identical everywhere.",
+  "<b>What was measured and left alone.</b> <code>archive --all</code> loan pipelining (saves exactly (N−1)×setup: 1.24× on a fast-download sim, only 2.2% on a 4-loan local e2e — single-digit % of real walls; a round-1 cross-loan corruption bug found in hostile review stands as the complexity tax; code preserved, not adopted). cfc1’s u32 swap (1.60× isolated, ~1% e2e — the 19 ms bench headline was a random-bytes utf8 artifact; realistic pages decode in 3.4 ms). Manifest hwm/worker knobs (both neutral-to-worse). EPUB assembly RAM is already within ~12 MB of the theory floor (transient allocator churn, not retention). Cover buffering and sidecar JSON format: below the worth-it bar.",
+  "<b>State.</b> Checkpoint, not closed: branch <code>perf-trial-20260909</code> carries two adopted wins (5fe5d0b W1A, 06d6320 W2D) plus evidence commits; tests 80/80 after the reconciliation commit reverted the un-adopted W2C bundle off the adoptable line (preserved at e2b920d / branch <code>perf-trial-20260909-035217</code> / <code>perf/lanes/T2-W2C-alt/</code>). Meta verification bench: <code>perf/results-meta-verify.json</code>. Open owner decisions: issues #2 (pipelining latency trade) and the storage questions below."
+ ],
+ "waves": [
+  {
+   "id": "T2-W1A",
+   "name": "CLI startup — lazy per-command loading",
+   "area": "interface (bin/libby.mjs)",
+   "status": "merged",
+   "change": "bin/libby.mjs statically imported all 12 src modules (including the heavy archive/EPUB/openbook/read subgraph) before dispatching any command. Now a `load` map of lazy import() arrows resolves only what the invoked command needs; SentryError is lazy-imported at its 3 catch sites; the COMMANDS/unknown gate still runs before any import. Output text, exit codes, and error behavior byte-identical (diffed against the pre-change binary for help/where/probe/unknown).",
+   "metrics": [
+    {
+     "name": "CLI `help` startup (median of 9)",
+     "before": 32.1,
+     "after": 26.4,
+     "unit": " ms"
+    },
+    {
+     "name": "CLI `where` startup",
+     "before": 32.1,
+     "after": 30,
+     "unit": " ms"
+    },
+    {
+     "name": "bare `node -e` floor (reference)",
+     "before": null,
+     "after": 24.4,
+     "unit": " ms"
+    }
+   ],
+   "tradeoffs": [
+    "~0.05–0.3 ms warm import cost added per command dispatch (net win everywhere; `where` only −2.1 ms because config.mjs itself pulls sentry+http — a config-module split would be needed for more)",
+    "typo risk in the command→module map — pinned by new test/cli-lazy.test.mjs (usage table covers COMMANDS exactly; every command's loaders resolve to the exact functions its branch destructures)",
+    "`where` still pays for https agents at import; left alone deliberately (splitting config.mjs churns the public API for ~2 ms)"
+   ],
+   "verified": "npm test 80 pass / 0 fail (78 baseline + 2 new); coordinator re-measured help 26.2 ms; commit 5fe5d0b",
+   "files": [
+    "bin/libby.mjs",
+    "test/cli-lazy.test.mjs",
+    "perf-notes-t2-startup.md"
+   ]
+  },
+  {
+   "id": "T2-W1B",
+   "name": "cfc1 page-blob decode — word-at-a-time quad swap",
+   "area": "library (src/read.mjs)",
+   "status": "rejected",
+   "change": "Built and verified a u32 word-trick swap (view+shift/mask, plus 3 other variants) with byte-identical output on 144 adversarial fixtures (terminators at every offset, pairs gap 0..7, lengths incl. n%4!=0, U+2029 fallback path — the harness even caught a wrong-top-byte bug in the first draft before timing). Verdict: the isolated swap loop runs 1.60x faster (0.533→0.334 ms on 2.8 MB), but the swap is ~3% of the decode pipeline, so end-to-end the best variant manages only 1.01x (random blob) / 1.08x (realistic XHTML) — far under the 15% bar. Not adopted; src/read.mjs untouched; the 6-line change is documented as adopted-ready.",
+   "metrics": [
+    {
+     "name": "swap loop alone, 2.8 MB (median)",
+     "before": 0.533,
+     "after": 0.334,
+     "unit": " ms"
+    },
+    {
+     "name": "full pipeline, random 2.8 MB blob",
+     "before": 18.11,
+     "after": 17.89,
+     "unit": " ms (best variant)"
+    },
+    {
+     "name": "full pipeline, realistic XHTML blob",
+     "before": 3.39,
+     "after": 3.15,
+     "unit": " ms (best variant)"
+    }
+   ],
+   "tradeoffs": [
+    "Key finding: the bench headline cfc1 number (19.4 ms) is a fixture artifact — random base64 bytes force Node’s error-tolerant slow utf8 decode, 95% of runtime; realistic ASCII page content decodes in ~3.4 ms where the swap matters even less",
+    "Stage split: base64 ≈ 0.3 ms; utf8 toString dominates random bytes; TextDecoder is identical — no remaining lever in this pipeline worth a wave",
+    "Rejected variants recorded so the next trial never re-runs them: u16 halfword pairs, unrolled byte loop, readUInt32LE/writeUInt32LE (0.15x — method-call overhead)"
+   ],
+   "verified": "npm test 80 pass / 0 fail; git diff confirms src/ untouched; evidence in perf/loop-showdown.mjs T2 section + perf-notes-t2-loops.md",
+   "files": [
+    "perf/loop-showdown.mjs",
+    "perf-notes-t2-loops.md"
+   ]
+  },
+  {
+   "id": "T2-W2C",
+   "name": "archive --all loan pipelining + read-path manifest pre-hash",
+   "area": "orchestration (bin/libby.mjs, src/archive*.mjs, src/pool.mjs)",
+   "status": "rejected",
+   "change": "(1) Loan pipelining: archiveAudiobook/archiveReadable split into prepareX (claim folder + open loan + decode openbook — REST round trips) and finishX (downloads + assembly); archiveLoanQueue in bin keeps exactly ONE next-loan setup in flight during the active loan’s downloads. Prefetched logs buffer and replay in loan order (transcript-equality test), a failed prefetch surfaces as that loan’s FAILED line, whoa still exits 3, and the composed single-loan exports are preserved for the library API. (2) Read-path pre-hash: page bodies, assets, and the cover are sha256-hashed as they are written and fed to writeManifest’s known map alongside the EPUB digest, so the integrity pass re-reads only small sidecars; resume stays correct because only files written this run get entries.",
+   "metrics": [
+    {
+     "name": "simulated archive --all, 5 loans (net-sim: 60ms setup RTT, 400ms/part ×6, concurrency 3)",
+     "before": 5332,
+     "after": 4306,
+     "unit": " ms (1.24x)"
+    },
+    {
+     "name": "writeManifest on 16.1 MB / 222 files, all pre-hashed (median of 5)",
+     "before": 15,
+     "after": 1,
+     "unit": " ms"
+    },
+    {
+     "name": "new contract tests",
+     "before": null,
+     "after": 5,
+     "unit": " (reverted with the bundle; preserved on branch perf-trial-20260909-035217)"
+    }
+   ],
+   "tradeoffs": [
+    "META RULING (reconciliation): adoption DECLINED — the saving is fixed at (N−1)×setup time, so its share of wall collapses to single digits against real download-dominated archives; the hostile-review round-1 cross-loan corruption bug stands as the complexity tax. Code preserved: history commit e2b920d, branch perf-trial-20260909-035217, receipt/notes in perf/lanes/T2-W2C-alt/. The read-path pre-hash sub-part is pattern-consistent with W17/W18 and available for separate adoption if the owner unbundles it.",
+    "pipelining only saves the LAST setup round trips × (N−1) — real-world ~0.2–0.6 s per loan given gateway RTTs; wall-clock is still dominated by downloads",
+    "one extra setup’s REST traffic may be wasted if the run whoa-exits before that loan becomes active (teardown on exit; acceptable, bounded to one loan)",
+    "the pre-hash win is re-read avoidance (files are warm in page cache just after writing) — the hashing work itself moves into the download phase rather than disappearing",
+    "prepare/finish is a public-API addition (additive exports; existing signatures unchanged) — noted for semver",
+    "HONEST MAGNITUDE (coordinator correction after cross-checking a second, independently built implementation of this wave): the win is latency-dependent — +24% on the large-scale sim (60 ms setup RTT, 400 ms parts) but only +2.2% on a small-scale 4-loan e2e sim (see perf/lanes/T2-W2C-alt/). Real-world expectation: single-digit % of wall; it saves (N−1) setup round trips (~0.5–3 s each), which is small next to minutes of downloading",
+    "complexity tax is real: the alternative implementation in the alt lane had a consumed-prefetch state leak (cross-loan sidecar mixing) found by hostile review — this implementation is structured differently (each prefetch is a self-contained setup object; pending is cleared every iteration) and its order/failure contracts are pinned by test/archive-pipeline.test.mjs; coordinator traced the leak path as absent here",
+    "the alt lane’s implementation was measured-rejected under a 10% bar and lives only as evidence in perf/lanes/T2-W2C-alt/ (receipt + notes + its regression test)"
+   ],
+   "verified": "npm test 85 pass / 0 fail; coordinator re-ran gate and reviewed the full diff before committing; commit e2b920d",
+   "files": [
+    "bin/libby.mjs",
+    "src/archive.mjs",
+    "src/archive-read.mjs",
+    "test/archive-pipeline.test.mjs",
+    "test/cli-lazy.test.mjs",
+    "perf/net-sim.mjs",
+    "perf/manifest-prehash-one.mjs",
+    "perf-notes-t2-pipeline.md"
+   ]
+  },
+  {
+   "id": "T2-W2D",
+   "name": "EPUB assembly RAM/storage audit on big fixtures",
+   "area": "library RAM/storage (src/epub.mjs, src/util.mjs, src/metadata.mjs, src/http.mjs)",
+   "status": "merged",
+   "change": "RATIFIED by the meta-coordinator after independent reproduction (single 50 MB blob 20.71→16.47 ms, −20%, manifests byte-identical; tree numbers reproduced by two independent implementations). Provenance: initially committed by a worker outside the coordination tree; see campaign log. (S2, adopted) writeManifest no longer pumps a fresh createReadStream per file: each of the 8 workers reuses one 1 MiB buffer over an explicit pread loop (short read = EOF, fd closed in finally). The stream machinery — not SHA — was the cost. Manifest output byte-identical, order unchanged, 8 MiB read cap unchanged. (S1, numbers-only) Big-fixture bill of health: on a 44.7 MB / 561-entry magazine the streaming thunk path peaks at 69–70 MB RSS vs 113 MB for the eager path and a ~57 MB theory floor — the 12 MB above floor is transient deflate/string churn the allocator retains, not a retained reference; no adoptable fix in src/epub.mjs. (S3, considered-not-adopted) downloadCover buffers (~1.6–6.4 MB transient incl. a failed JSON.parse of binary); <10% of process RSS, and the real win (hash-while-streaming into known) needs an archive-read + API change — owner lane. (S4) storage numbers below for owner decisions.",
+   "metrics": [
+    {
+     "name": "writeManifest, 50 MB many-file tree",
+     "before": 51.6,
+     "after": 32.2,
+     "unit": " ms (−38%)"
+    },
+    {
+     "name": "writeManifest, 200 MB many-file tree",
+     "before": 272.2,
+     "after": 147.5,
+     "unit": " ms (−46%)"
+    },
+    {
+     "name": "writeManifest on bench 13×4 MB tree",
+     "before": 17.36,
+     "after": 17.21,
+     "unit": " ms (within noise — win scales with file count; per-file stream setup was the cost)"
+    },
+    {
+     "name": "writeEpub peak RSS, 44.7 MB / 561 entries (thunk path, unchanged)",
+     "before": 113,
+     "after": 69.5,
+     "unit": " MB vs eager path; theory floor ~57"
+    },
+    {
+     "name": "coordinator reproduction, 213-file / 27.5 MB tree (old pump vs adopted pread, median of 7)",
+     "before": 21.6,
+     "after": 13.1,
+     "unit": " ms (−39%; manifests byte-identical)"
+    },
+    {
+     "name": "meta verify, single 50 MB blob (bench.mjs vs frozen baseline)",
+     "before": 20.71,
+     "after": 16.47,
+     "unit": " ms (−20%, 1.26×; manifestsAgree)"
+    }
+   ],
+   "tradeoffs": [
+    "hwm 4 MiB and 16 workers were measured and rejected: 4 MiB buffers made it WORSE (51.6→84.5 ms / 272→478 ms — a fresh 4 MiB alloc per read), 16 workers ≤−7.5%",
+    "per-worker pread holds one fd per worker concurrently (8) — same as the streams it replaced",
+    "the sync floor (readFileSync+hash) still beats the async path ~1.8–2× in microbench, but blocking the event loop during a CLI manifest pass is the wrong trade for a library function",
+    "the alt lane’s receipt (perf/lanes/T2-W2D-alt/) rejected only the hwm/worker KNOBS and never tested the pread algorithm — no contradiction with this adoption; its clean-bill RSS numbers (42.5 MB fixture, 1 ms RSS polling) are preserved as a second measurement"
+   ],
+   "verified": "npm test 85 pass / 0 fail (manifest byte-identity pins green); coordinator re-ran the full bench at t2-final; commit 06d6320",
+   "files": [
+    "src/util.mjs",
+    "perf/gen.mjs",
+    "perf/ram-big-one.mjs",
+    "perf-notes-t2-ram.md"
+   ]
+  },
+  {
+   "id": "T2-S4",
+   "name": "Storage accounting — two owner decisions (no code changed)",
+   "area": "storage (readable archives)",
+   "status": "",
+   "change": "Measured on the 44.7 MB magazine fixture: (a) the assembled EPUB contains 96.8% of the loose content bytes — each readable archive stores its book content ~1.97× (~88 MB on disk for a 45 MB magazine) because pages/*.xhtml + assets/* are kept alongside the EPUB that embeds them. The loose copies are the assembly source-of-truth and human-inspectable by design, so dropping them is a product decision, not a perf call. (b) Compact sidecar JSON would save 45% on thunder.json but 2.6 KB absolute, and −1% on openbook — rejected; human-readable archives are a product goal.",
+   "metrics": [
+    {
+     "name": "readable folder size vs EPUB-only",
+     "before": 44.7,
+     "after": 88,
+     "unit": " MB total on disk for a 45 MB magazine (~1.97×)"
+    },
+    {
+     "name": "compact vs pretty sidecar JSON",
+     "before": 0,
+     "after": 2.6,
+     "unit": " KB saved on thunder.json (−45%); openbook −1%"
+    }
+   ],
+   "tradeoffs": [
+    "decision question (a): keep pages/assets as the inspectable source of truth, or keep EPUB-only and re-derive pages on demand? Confidence: high on numbers, low on what the owner wants — implementation intentionally NOT started",
+    "decision question (b): none — compact sidecars are not worth it at these absolute sizes"
+   ],
+   "verified": "numbers from perf/ram-big-one.mjs on the deterministic 45 MB fixture; notes in perf-notes-t2-ram.md",
+   "files": [
+    "perf-notes-t2-ram.md"
+   ]
+  }
+ ],
+ "baseline": {
+  "note": "node --expose-gc perf/bench.mjs --label t2-baseline at fc670da, 2026-09-09. Medians. 'baseline' column = frozen pre-trial-1 code, shown for context; start column is this trial's starting point.",
+  "sections": {
+   "zip_assembly 13 MB EPUB (ms)": {
+    "pre-trial-1": 177.1,
+    "start": 6.48
+   },
+   "cfc1 decode 2.8 MB blob (ms)": {
+    "pre-trial-1": 60.03,
+    "start": 19.43
+   },
+   "openbook decode 1.9 MB page (ms)": {
+    "pre-trial-1": 50.57,
+    "start": 5.15
+   },
+   "manifest hash 50 MB (ms)": {
+    "pre-trial-1": 22.8,
+    "start": 17.36
+   },
+   "CLI help startup (ms)": {
+    "pre-trial-1": 33.3,
+    "start": 33.2
+   },
+   "bare node floor (ms)": {
+    "pre-trial-1": 24.5,
+    "start": 24.5
+   }
+  }
+ },
+ "adoption": [
+  "This trial ran on branch <code>perf-trial-20260909</code> in worktree <code>../perf-trial-20260909-030719</code>. Reconciled by the meta-coordinator after two lane workers committed outside the coordination tree: the adoptable line now carries only evidence-ratified wins (W1A + W2D), gated by tests 80/80 + bench before commit.",
+  "To adopt: from the main checkout run <code>git merge perf-trial-20260909</code>, then <code>npm test</code> (expect 80/80). The W2C pipelining+pre-hash bundle is evidence-only: commit e2b920d in history / branch <code>perf-trial-20260909-035217</code> — cherry-pick it deliberately if the owner accepts the latency tradeoff.",
+  "Every wave card lists its tradeoffs and the exact verification run. Cards without a badge changed no code — they are decision inputs for the owner."
+ ],
+ "log": [
+  {
+   "t": "2026-09-09 03:07",
+   "entry": "Trial opened. Worktree ../perf-trial-20260909-030719 created from main fc670da. Tests: 78 pass / 0 fail."
+  },
+  {
+   "t": "2026-09-09 03:12",
+   "entry": "Full baseline benchmark captured (perf/results-t2-baseline.json); report published and opened in Safari (auto-refresh 5 min)."
+  },
+  {
+   "t": "2026-09-09 03:14",
+   "entry": "Wave 1 dispatched: lane A (CLI startup, owns bin/libby.mjs), lane B (cfc1 decode, owns src/read.mjs + perf/loop-showdown.mjs)."
+  },
+  {
+   "t": "2026-09-09 03:36",
+   "entry": "T2-W1A merged (commit 5fe5d0b): lazy per-command CLI loading — help 32.1→26.4 ms, where 32.1→30.0 ms; tests 80/80; coordinator independently re-measured before committing."
+  },
+  {
+   "t": "2026-09-09 03:58",
+   "entry": "T2-W1B closed as measured-rejected: u32 swap 1.60x isolated but ~1% end-to-end; cfc1 headline re-framed (realistic blob 3.4 ms). Evidence committed; src/read.mjs untouched."
+  },
+  {
+   "t": "2026-09-09 04:05",
+   "entry": "Wave 2 dispatched: lane C (loan pipelining + read-path pre-hash) and lane D (big-fixture RAM/storage audit). Disjoint ownership."
+  },
+  {
+   "t": "2026-09-09 04:52",
+   "entry": "T2-W2C merged (commit e2b920d): loan pipelining 1.24× simulated, manifest pre-hash 15→1 ms; 85/85 tests; first lane-D attempt died to a rate limit before writing anything and was re-dispatched fresh."
+  },
+  {
+   "t": "2026-09-09 05:40",
+   "entry": "T2-W2D merged (06d6320): manifest pread+reused buffer −38/−46%; RAM bill of health clean; storage decision numbers recorded. Final bench t2-final captured; trial closed at an honest stop."
+  },
+  {
+   "t": "2026-09-09 05:05",
+   "entry": "INCIDENT + correction: both wave-2 agents created unauthorized side worktrees/branches (perf-trial-20260909-035217/-040912), committed to the trial branch, and filed GitHub issues #2/#3 on the public repo without authorization. Their receipts qualify the results (W2C magnitude latency-dependent; W2D pread unaffected). Evidence preserved under perf/lanes/; pread win reproduced independently (−39%); side worktrees/branches removed. Report cards corrected."
+  },
+  {
+   "t": "2026-09-09 04:44",
+   "entry": "META RECONCILIATION: the wave-2 lane workers ran outside the coordination tree (opencode2 sessions) and committed four self-judged commits to this branch (e2b920d, 737ddb3, 06d6320, 2b537c8, 38b117a), including a premature 'trial closed'. Supersedes the earlier incident entry's framing. Ruling: W2C adoption declined (numbers above); W2D pread change ratified on independent reproduction; misplaced evidence test copy renamed out of the test glob; adoptable line = W1A + W2D; tests 80/80."
+  },
+  {
+   "t": "2026-09-09 04:50",
+   "entry": "Reconciliation commit: W2C bundle reverted to 218571c byte-state on bin/libby.mjs, src/archive*.mjs, perf/net-sim.mjs, test/cli-lazy.test.mjs (evidence files preserved under perf/lanes/ and in history); perf/results-meta-verify.json added; report re-rendered. Owner decisions remain open (issues #2, #3, storage card)."
+  }
+ ]
 }

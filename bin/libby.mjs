@@ -221,59 +221,6 @@ async function runProbe(args) {
   if (failed) process.exit(1);
 }
 
-/**
- * `libby archive --all` orchestration: archive loans strictly in order, but keep the
- * NEXT loan's setup (open + openbook REST round trips) in flight while the active loan
- * downloads — exactly one setup ahead, so per-loan download concurrency is unchanged.
- * A prefetched setup logs into a buffer that is replayed when the loan becomes active,
- * so the per-loan log blocks are identical to a sequential run. Failure semantics are
- * the sequential loop's: a failing loan prints FAILED "<title>" (its buffered lines
- * replayed first) and the rest continue; SentryError result 'whoa' exits 3 at the same
- * point in the flow — the exit also tears down any in-flight prefetch, and no new
- * setup starts once whoa is known.
- *
- * io.prepare(loan, log) -> setup state; io.finish(loan, setup) -> bookDir.
- * SentryError and exit are injectable so tests can drive this without a process.
- */
-export async function archiveLoanQueue(targets, ctx, io) {
-  const { prepare, finish, SentryError, exit = (s) => process.exit(s) } = io;
-  const done = [];
-  let pending = null; // { loan, lines, setup } — the single allowed prefetch
-  for (let i = 0; i < targets.length; i++) {
-    const loan = targets[i];
-    const prefetched = pending?.loan === loan ? pending : null;
-    const buffered = prefetched?.lines;
-    pending = null;
-    try {
-      // Adopt the prefetched setup; the first loan (and any loan whose predecessor
-      // failed) prepares here. The next loan's setup starts only after this resolves,
-      // so two setups are never in flight at once, and it runs during finish() below.
-      const setup = await (prefetched ? prefetched.setup : prepare(loan, ctx.log));
-      if (setup instanceof Error) throw setup; // held by the prefetch's .catch below
-      if (buffered) for (const m of buffered) ctx.log(m);
-      if (i + 1 < targets.length) {
-        const lines = [];
-        pending = {
-          loan: targets[i + 1],
-          lines,
-          // Errors are held, not thrown: the loan's own FAILED handling reports them
-          setup: prepare(targets[i + 1], (m) => lines.push(m)).catch((e) => e),
-        };
-      }
-      done.push(await finish(loan, setup));
-    } catch (e) {
-      if (buffered) for (const m of buffered) ctx.log(m);
-      console.error(`FAILED "${loan.title}": ${e.message}`);
-      if (e instanceof SentryError && e.result === 'whoa') {
-        console.error('Rate-limited by OverDrive ("whoa"). Stop and retry later.');
-        exit(3);
-        return done; // reachable only under a non-terminating exit (tests)
-      }
-    }
-  }
-  return done;
-}
-
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const command = args._[0] ?? 'help';
@@ -510,17 +457,23 @@ async function main() {
       console.error('No matching loans to archive.');
       process.exit(1);
     }
-    const { prepareAudiobook, finishAudiobook } = await load.archive();
-    const { prepareReadable, finishReadable } = await load.archiveRead();
-    const { SentryError } = await load.sentry();
+    const { archiveAudiobook } = await load.archive();
+    const { archiveReadable } = await load.archiveRead();
     const ctx = { client, identity, cfg, log: cfg.log };
-    const prepare = (loan, log) =>
-      loan.type === 'audiobook'
-        ? prepareAudiobook(ctx, loan, cfg.out, log)
-        : prepareReadable(ctx, loan, cfg.out, log);
-    const finish = (loan, setup) =>
-      loan.type === 'audiobook' ? finishAudiobook(setup) : finishReadable(setup);
-    const done = await archiveLoanQueue(targets, ctx, { prepare, finish, SentryError });
+    const done = [];
+    for (const loan of targets) {
+      try {
+        const archive = loan.type === 'audiobook' ? archiveAudiobook : archiveReadable;
+        done.push(await archive(ctx, loan, cfg.out));
+      } catch (e) {
+        const { SentryError } = await load.sentry();
+        console.error(`FAILED "${loan.title}": ${e.message}`);
+        if (e instanceof SentryError && e.result === 'whoa') {
+          console.error('Rate-limited by OverDrive ("whoa"). Stop and retry later.');
+          process.exit(3);
+        }
+      }
+    }
     console.log(`\nArchived ${done.length}/${targets.length} title(s) to ${cfg.out}`);
     return;
   }

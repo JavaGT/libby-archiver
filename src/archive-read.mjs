@@ -20,7 +20,6 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { openLoan, fetchOpenbook, extractSpine, openKindFor } from './openbook.mjs';
 import { fetchPage, fetchReadResource, assetRefs } from './read.mjs';
 import { writeEpub } from './epub.mjs';
@@ -39,20 +38,13 @@ import {
 } from './util.mjs';
 
 /**
- * Setup phase of a readable archive: claim the folder, open the loan, decode the
- * openbook (gateway + read-API round trips — no payload downloads). Split from
- * finishReadable so `libby archive --all` can keep the NEXT loan's setup in flight
- * while the active loan downloads (archiveLoanQueue in bin/libby.mjs); `log` is
- * injectable there, so a prefetched loan's lines are buffered until it becomes active.
- *
  * @param {object} ctx   { client, identity, cfg, log }
  * @param {Loan} loan    an ebook or magazine loan
  * @param {string} outDir
- * @returns {Promise<{ctx, loan, bookDir, assetsDir, openbook, web, cookie, spine, fixedLayout}>}
- *   state for finishReadable
  */
-export async function prepareReadable(ctx, loan, outDir, log = ctx.log ?? (() => {})) {
+export async function archiveReadable(ctx, loan, outDir) {
   const { client, identity, cfg } = ctx;
+  const log = ctx.log ?? (() => {});
   const kind = openKindFor(loan); // 'magazine' | 'book'
 
   const { bookDir, folder } = claimBookDir(outDir, loan);
@@ -79,20 +71,6 @@ export async function prepareReadable(ctx, loan, outDir, log = ctx.log ?? (() =>
 
   writeJson(path.join(bookDir, 'loan.json'), loan.raw, { secret: true });
 
-  return { ctx, loan, bookDir, assetsDir, openbook, web, cookie, spine, fixedLayout };
-}
-
-/**
- * Download + assemble phase; consumes the state prepareReadable returned. Logs go
- * through ctx.log: finish only ever runs while the loan is the active one.
- */
-export async function finishReadable({
-  ctx, loan, bookDir, assetsDir, openbook, web, cookie, spine, fixedLayout,
-}) {
-  const { cfg } = ctx;
-  const log = ctx.log ?? (() => {});
-  const known = {}; // digests of files written below this run — writeManifest skips re-reading them
-
   // 3. catalog metadata + cover — started (not awaited) so both round trips run while
   // the pages/assets download below; thunder is awaited before the EPUB/metadata writes
   // and coverEntry before assembly. fetchThunderMedia never throws (null on failure),
@@ -107,7 +85,6 @@ export async function finishReadable({
         const coverPath = path.join(bookDir, 'cover.jpg');
         await downloadCover(coverUrl, coverPath, { insecureTLS: cfg.insecureTLS });
         coverEntry = { path: 'cover.jpg', data: () => fs.readFileSync(coverPath) };
-        known['cover.jpg'] = crypto.createHash('sha256').update(fs.readFileSync(coverPath)).digest('hex');
         log('   cover saved');
       } catch (e) {
         log(`   cover failed: ${e.message}`);
@@ -118,17 +95,14 @@ export async function finishReadable({
   // 4. fetch + decode pages — 4 at a time (otherwise a magazine is hundreds of serial
   // round trips); mapLimit keeps pageEntries in spine order. Logs report decoded pages.
   // Page paths come from the openbook — they are validated to stay inside bookDir.
-  // Each body lives only for this callback: hashed + written to disk, refs collected,
-  // then dropped — assembly re-reads pages off disk via the entry thunks.
+  // Each body lives only for this callback: written to disk, refs collected, then dropped —
+  // assembly re-reads pages off disk via the entry thunks.
   const pageEntries = await mapLimit(spine, 4, async (part) => {
     const body = await fetchPage(part, { cookie, insecureTLS: cfg.insecureTLS });
     // keep each page at its original openbook path so relative ../assets refs stay correct
     const dest = safeJoin(bookDir, part.path);
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     fs.writeFileSync(dest, body, 'utf8');
-    // hash while the body is in hand: update() hashes the same utf8 bytes that
-    // writeFileSync just wrote, so the manifest pass need not re-read the file
-    known[part.path] = crypto.createHash('sha256').update(body).digest('hex');
     log(`   decoded page ${part.index}/${spine.length}`);
     return {
       path: part.path,
@@ -159,7 +133,6 @@ export async function finishReadable({
       }
       const dest = path.join(assetsDir, name);
       fs.writeFileSync(dest, res.body);
-      known[`assets/${name}`] = crypto.createHash('sha256').update(res.body).digest('hex');
       return { path: `assets/${name}`, data: () => fs.readFileSync(dest) };
     })
   ).filter(Boolean);
@@ -192,11 +165,10 @@ export async function finishReadable({
   }, epubPath);
   log(`   ${(bytes / 1e6).toFixed(1)} MB EPUB`);
 
-  // 7. normalized metadata + integrity + README — pages/assets/cover arrive pre-hashed
-  // (steps 3-5) and the EPUB was hashed while streaming (writeZip), so the manifest
-  // only re-reads the small sidecars. README is written first so the manifest covers
-  // it too. Files not written this run (skipped assets, absent cover) get no `known`
-  // entry, so resume semantics stay correct: writeManifest hashes what is on disk.
+  // 7. normalized metadata + integrity + README — the EPUB was hashed while streaming
+  // (writeZip), so the manifest skips re-reading it; for a big magazine that is the
+  // largest file in the archive. The rel path is the EPUB's basename. README is
+  // written first so the manifest covers it too.
   writeJson(path.join(bookDir, 'metadata.json'), {
     titleId: loan.id,
     cardId: loan.cardId,
@@ -219,16 +191,10 @@ export async function finishReadable({
     archivedAt: new Date().toISOString(),
   });
   fs.writeFileSync(path.join(bookDir, 'README.txt'), readmeText(loan, spine.length, assetEntries.length), 'utf8');
-  known[epubName] = sha256; // hashed while streaming (writeZip) — the archive's largest file
-  await writeManifest(bookDir, { known });
+  await writeManifest(bookDir, { known: { [epubName]: sha256 } });
 
   log(`   done: ${bookDir}`);
   return bookDir;
-}
-
-/** Archive one readable loan end to end (single-title path and library API). */
-export async function archiveReadable(ctx, loan, outDir) {
-  return finishReadable(await prepareReadable(ctx, loan, outDir));
 }
 
 /** Per-page viewport for fixed-layout rendering (from the spine entry). */
