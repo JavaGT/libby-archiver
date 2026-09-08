@@ -2,9 +2,6 @@
 //
 //   <Author> - <Title>/
 //     <Title>.epub                     assembled, ready-to-read (fixed-layout for magazines)
-//     pages/*.xhtml                     decoded page bodies (raw, exactly as decoded)
-//     assets/*.jpg                      plaintext page/image assets
-//     cover.jpg                         max-resolution cover
 //     openbook.json / passport.json / loan.json / thunder.json
 //     metadata.json                    normalized summary
 //     manifest.sha256                  integrity hashes
@@ -12,13 +9,16 @@
 //
 // Pages come off the read host ciphered with __bif_cfc1 (see read.mjs); assets are plaintext.
 //
-// Payloads are never retained in memory: every decoded page/asset/cover is written to
-// bookDir first, and the EPUB entries hold disk-backed thunks (data: () => fs.readFileSync)
-// that the streaming zip writer resolves one entry at a time. The on-disk copy is the
-// source of truth — if a payload file vanishes between write and assembly, the read throws
-// and the archive fails loudly (no partial EPUB is left behind).
+// The EPUB is the archive's single copy of the content (owner decision): decoded pages,
+// their image assets, and the cover live only inside it, byte-for-byte as decoded —
+// unzip the EPUB to inspect them. During the run they stage in a per-run temp dir so
+// payloads are still never retained in memory: the EPUB entries hold disk-backed thunks
+// (data: () => fs.readFileSync) that the streaming zip writer resolves one entry at a
+// time, and the staging dir is deleted once the EPUB is assembled. A payload that
+// vanishes between write and assembly fails the archive loudly (no partial EPUB).
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { openLoan, fetchOpenbook, extractSpine, openKindFor } from './openbook.mjs';
 import { fetchPage, fetchReadResource, assetRefs } from './read.mjs';
@@ -48,8 +48,6 @@ export async function archiveReadable(ctx, loan, outDir) {
   const kind = openKindFor(loan); // 'magazine' | 'book'
 
   const { bookDir, folder } = claimBookDir(outDir, loan);
-  const assetsDir = path.join(bookDir, 'assets');
-  fs.mkdirSync(assetsDir, { recursive: true }); // pages create their own dirs from their paths
   log(`\n=> ${folder}  [${loan.type}]`);
 
   // 1. open -> passport
@@ -75,123 +73,133 @@ export async function archiveReadable(ctx, loan, outDir) {
   // the pages/assets download below; thunder is awaited before the EPUB/metadata writes
   // and coverEntry before assembly. fetchThunderMedia never throws (null on failure),
   // and cover failures are caught + logged exactly as before.
-  log('   fetching catalog metadata...');
-  const thunderP = fetchThunderMedia(cfg.library, loan.id, { insecureTLS: cfg.insecureTLS }).catch(() => null);
-  let coverEntry = null;
-  const coverP = thunderP.then(async (thunder) => {
-    const coverUrl = maxResCoverUrl(thunder, loan.coverUrl);
-    if (coverUrl) {
-      try {
-        const coverPath = path.join(bookDir, 'cover.jpg');
-        await downloadCover(coverUrl, coverPath, { insecureTLS: cfg.insecureTLS });
-        coverEntry = { path: 'cover.jpg', data: () => fs.readFileSync(coverPath) };
-        log('   cover saved');
-      } catch (e) {
-        log(`   cover failed: ${e.message}`);
+  // Payloads stage in a per-run temp dir (not bookDir): the EPUB is the archive's only
+  // copy of the content, and staging is deleted once assembly is done — the disk-backed
+  // thunks keep whole-book residency out of memory exactly as before.
+  const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'libby-epub-'));
+  fs.mkdirSync(path.join(staging, 'assets'), { recursive: true }); // assets land flat, like the old assets/ dir
+  try {
+    log('   fetching catalog metadata...');
+    const thunderP = fetchThunderMedia(cfg.library, loan.id, { insecureTLS: cfg.insecureTLS }).catch(() => null);
+    let coverEntry = null;
+    const coverP = thunderP.then(async (thunder) => {
+      const coverUrl = maxResCoverUrl(thunder, loan.coverUrl);
+      if (coverUrl) {
+        try {
+          const coverPath = path.join(staging, 'cover.jpg');
+          await downloadCover(coverUrl, coverPath, { insecureTLS: cfg.insecureTLS });
+          coverEntry = { path: 'cover.jpg', data: () => fs.readFileSync(coverPath) };
+          log('   cover saved');
+        } catch (e) {
+          log(`   cover failed: ${e.message}`);
+        }
       }
-    }
-  });
+    });
 
-  // 4. fetch + decode pages — 4 at a time (otherwise a magazine is hundreds of serial
-  // round trips); mapLimit keeps pageEntries in spine order. Logs report decoded pages.
-  // Page paths come from the openbook — they are validated to stay inside bookDir.
-  // Each body lives only for this callback: written to disk, refs collected, then dropped —
-  // assembly re-reads pages off disk via the entry thunks.
-  const pageEntries = await mapLimit(spine, 4, async (part) => {
-    const body = await fetchPage(part, { cookie, insecureTLS: cfg.insecureTLS });
-    // keep each page at its original openbook path so relative ../assets refs stay correct
-    const dest = safeJoin(bookDir, part.path);
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.writeFileSync(dest, body, 'utf8');
-    log(`   decoded page ${part.index}/${spine.length}`);
-    return {
-      path: part.path,
-      viewport: viewportOf(openbook, part),
-      data: () => fs.readFileSync(dest),
-      refs: [...assetRefs(body)], // asset paths, in body order (kept; bodies are not)
-    };
-  });
+    // 4. fetch + decode pages — 4 at a time (otherwise a magazine is hundreds of serial
+    // round trips); mapLimit keeps pageEntries in spine order. Logs report decoded pages.
+    // Page paths come from the openbook — they are validated to stay inside the staging
+    // dir at their original openbook-relative paths. Each body lives only for this
+    // callback: written to staging, refs collected, then dropped — assembly re-reads
+    // pages off staging via the entry thunks.
+    const pageEntries = await mapLimit(spine, 4, async (part) => {
+      const body = await fetchPage(part, { cookie, insecureTLS: cfg.insecureTLS });
+      // keep each page at its original openbook path so relative ../assets refs stay correct
+      const dest = safeJoin(staging, part.path);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(dest, body, 'utf8');
+      log(`   decoded page ${part.index}/${spine.length}`);
+      return {
+        path: part.path,
+        viewport: viewportOf(openbook, part),
+        data: () => fs.readFileSync(dest),
+        refs: [...assetRefs(body)], // asset paths, in body order (kept; bodies are not)
+      };
+    });
 
-  // assets referenced by any decoded page, in first-seen page order
-  const wantedAssets = new Set();
-  for (const { refs } of pageEntries) for (const ref of refs) wantedAssets.add(ref); // normalized 'assets/xxx.jpg'
+    // assets referenced by any decoded page, in first-seen page order
+    const wantedAssets = new Set();
+    for (const { refs } of pageEntries) for (const ref of refs) wantedAssets.add(ref); // normalized 'assets/xxx.jpg'
 
-  // 5. fetch each unique asset (plaintext) — 4 at a time; like pages, the body is written
-  // to disk and dropped, and the EPUB entry re-reads it lazily
-  const assetList = [...wantedAssets];
-  const assetEntries = (
-    await mapLimit(assetList, 4, async (ref, i) => {
-      const name = assetName(ref);
-      log(`   fetching asset ${i + 1}/${assetList.length} (${name}) ...`);
-      const res = await fetchReadResource(web.replace(/\/$/, '') + '/' + ref, {
-        cookie,
-        insecureTLS: cfg.insecureTLS,
-      });
-      if (res.status !== 200) {
-        log(`   asset ${ref} -> HTTP ${res.status} (skipped)`);
-        return null;
-      }
-      const dest = path.join(assetsDir, name);
-      fs.writeFileSync(dest, res.body);
-      return { path: `assets/${name}`, data: () => fs.readFileSync(dest) };
-    })
-  ).filter(Boolean);
+    // 5. fetch each unique asset (plaintext) — 4 at a time; like pages, the body is
+    // written to staging and dropped, and the EPUB entry re-reads it lazily
+    const assetList = [...wantedAssets];
+    const assetEntries = (
+      await mapLimit(assetList, 4, async (ref, i) => {
+        const name = assetName(ref);
+        log(`   fetching asset ${i + 1}/${assetList.length} (${name}) ...`);
+        const res = await fetchReadResource(web.replace(/\/$/, '') + '/' + ref, {
+          cookie,
+          insecureTLS: cfg.insecureTLS,
+        });
+        if (res.status !== 200) {
+          log(`   asset ${ref} -> HTTP ${res.status} (skipped)`);
+          return null;
+        }
+        const dest = path.join(staging, 'assets', name);
+        fs.writeFileSync(dest, res.body);
+        return { path: `assets/${name}`, data: () => fs.readFileSync(dest) };
+      })
+    ).filter(Boolean);
 
-  // 6. assemble the EPUB — streamed to disk entry by entry; each payload thunk reads its
-  // page/asset off bookDir, so no more than one entry is resident at a time. The catalog
-  // work from step 3 is collected here (it ran concurrently with the downloads above).
-  log('   assembling EPUB...');
-  const thunder = await thunderP;
-  await coverP; // coverEntry must be settled before assembly decides whether it is included
-  if (thunder) writeJson(path.join(bookDir, 'thunder.json'), thunder);
-  const creators = openbook.creator ?? [];
-  const author = creators.find((c) => /aut/i.test(c.role ?? ''))?.name || creators[0]?.name || loan.author;
-  const epubName = `${sanitize(openbook.title?.main ?? loan.title)}.epub`;
-  const epubPath = path.join(bookDir, epubName);
-  const { bytes, sha256 } = await writeEpub({
-    meta: {
-      identifier: openbook['-odread-buid'] || `libby-${loan.id}`,
+    // 6. assemble the EPUB — streamed to disk entry by entry; each payload thunk reads its
+    // page/asset off staging, so no more than one entry is resident at a time. The catalog
+    // work from step 3 is collected here (it ran concurrently with the downloads above).
+    log('   assembling EPUB...');
+    const thunder = await thunderP;
+    await coverP; // coverEntry must be settled before assembly decides whether it is included
+    if (thunder) writeJson(path.join(bookDir, 'thunder.json'), thunder);
+    const creators = openbook.creator ?? [];
+    const author = creators.find((c) => /aut/i.test(c.role ?? ''))?.name || creators[0]?.name || loan.author;
+    const epubName = `${sanitize(openbook.title?.main ?? loan.title)}.epub`;
+    const epubPath = path.join(bookDir, epubName);
+    const { bytes, sha256 } = await writeEpub({
+      meta: {
+        identifier: openbook['-odread-buid'] || `libby-${loan.id}`,
+        title: openbook.title?.main ?? loan.title,
+        subtitle: openbook.title?.subtitle || loan.subtitle,
+        creator: author,
+        language: Array.isArray(openbook.language) ? openbook.language[0] : openbook.language,
+        description: cleanDescription(openbook.description) || cleanDescription(thunder?.description),
+      },
+      spine: pageEntries,
+      assets: assetEntries,
+      cover: coverEntry,
+      nav: buildNav(openbook, new Set(spine.map((s) => s.path))),
+      fixedLayout,
+    }, epubPath);
+    log(`   ${(bytes / 1e6).toFixed(1)} MB EPUB`);
+
+    // 7. normalized metadata + integrity + README — the EPUB is the only content in the
+    // folder (hashed while streaming by writeZip, so the manifest skips re-reading it);
+    // staging is already gone by the time the manifest walks the folder. README is
+    // written first so the manifest covers it too.
+    writeJson(path.join(bookDir, 'metadata.json'), {
+      titleId: loan.id,
+      cardId: loan.cardId,
+      library: cfg.library,
+      libraryName: cfg.libraryName ?? cfg.library,
+      generator: generatorInfo(),
+      type: loan.type,
       title: openbook.title?.main ?? loan.title,
       subtitle: openbook.title?.subtitle || loan.subtitle,
-      creator: author,
-      language: Array.isArray(openbook.language) ? openbook.language[0] : openbook.language,
+      author,
+      publisher: creators.find((c) => /pbl/i.test(c.role ?? ''))?.name || thunder?.publisher?.name,
       description: cleanDescription(openbook.description) || cleanDescription(thunder?.description),
-    },
-    spine: pageEntries,
-    assets: assetEntries,
-    cover: coverEntry,
-    nav: buildNav(openbook, new Set(spine.map((s) => s.path))),
-    fixedLayout,
-  }, epubPath);
-  log(`   ${(bytes / 1e6).toFixed(1)} MB EPUB`);
-
-  // 7. normalized metadata + integrity + README — the EPUB was hashed while streaming
-  // (writeZip), so the manifest skips re-reading it; for a big magazine that is the
-  // largest file in the archive. The rel path is the EPUB's basename. README is
-  // written first so the manifest covers it too.
-  writeJson(path.join(bookDir, 'metadata.json'), {
-    titleId: loan.id,
-    cardId: loan.cardId,
-    library: cfg.library,
-    libraryName: cfg.libraryName ?? cfg.library,
-    generator: generatorInfo(),
-    type: loan.type,
-    title: openbook.title?.main ?? loan.title,
-    subtitle: openbook.title?.subtitle || loan.subtitle,
-    author,
-    publisher: creators.find((c) => /pbl/i.test(c.role ?? ''))?.name || thunder?.publisher?.name,
-    description: cleanDescription(openbook.description) || cleanDescription(thunder?.description),
-    language: openbook.language,
-    pages: spine.length,
-    assets: assetEntries.length,
-    fixedLayout,
-    subjects: (thunder?.subjects ?? []).map((s) => s.name),
-    isbns: extractIsbns(thunder?.formats),
-    expires: loan.expires,
-    archivedAt: new Date().toISOString(),
-  });
-  fs.writeFileSync(path.join(bookDir, 'README.txt'), readmeText(loan, spine.length, assetEntries.length), 'utf8');
-  await writeManifest(bookDir, { known: { [epubName]: sha256 } });
+      language: openbook.language,
+      pages: spine.length,
+      assets: assetEntries.length,
+      fixedLayout,
+      subjects: (thunder?.subjects ?? []).map((s) => s.name),
+      isbns: extractIsbns(thunder?.formats),
+      expires: loan.expires,
+      archivedAt: new Date().toISOString(),
+    });
+    fs.writeFileSync(path.join(bookDir, 'README.txt'), readmeText(loan, spine.length, assetEntries.length), 'utf8');
+    await writeManifest(bookDir, { known: { [epubName]: sha256 } });
+  } finally {
+    fs.rmSync(staging, { recursive: true, force: true });
+  }
 
   log(`   done: ${bookDir}`);
   return bookDir;
@@ -228,10 +236,9 @@ function readmeText(loan, pages, assets) {
     `Content: ${pages} page(s), ${assets} asset(s), decoded from the read host (__bif_cfc1).`,
     ``,
     `Files:`,
-    `  <Title>.epub   - assembled EPUB (fixed-layout for magazines)`,
-    `  pages/*.xhtml  - decoded page bodies, exactly as decoded`,
-    `  assets/*.jpg   - plaintext page/image assets`,
-    `  cover.jpg      - highest-resolution cover art`,
+    `  <Title>.epub   - assembled EPUB (fixed-layout for magazines); the archive's`,
+    `                   single copy of the content: pages, image assets, and cover`,
+    `                   live inside it — unzip it to inspect them`,
     `  openbook.json  - raw openbook manifest (spine, nav/toc)`,
     `  passport.json  - raw open passport`,
     `  loan.json      - raw loan record`,

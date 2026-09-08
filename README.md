@@ -9,8 +9,8 @@ titles, places holds, and archives what you have on loan:
 
 - **Audiobooks** — the MP3 spine parts as OverDrive serves them (no re-encoding), with cover
   art, chapters, narrators, ISBNs, and a checksum manifest.
-- **Ebooks & magazines** — assembled into an **EPUB** (fixed-layout for magazines) alongside
-  the decoded pages and their plaintext image assets.
+- **Ebooks & magazines** — assembled into an **EPUB** (fixed-layout for magazines) that
+  carries the decoded pages and their plaintext image assets as its only copy.
 
 It runs headless — no browser, no Selenium — and has no dependencies beyond Node itself.
 
@@ -60,10 +60,9 @@ Ebooks and magazines:
 
 ```
 <Author> - <Title>/
-  <Title>.epub                assembled EPUB (fixed-layout for magazines)
-  pages/*.xhtml               decoded page bodies, exactly as decoded
-  assets/*.jpg                plaintext page/image assets
-  cover.jpg                   cover art (largest available)
+  <Title>.epub                the archive's single copy of the content: assembled EPUB
+                              (fixed-layout for magazines) carrying the decoded pages,
+                              their image assets, and the cover — unzip it to inspect
   openbook.json               spine + nav/toc
   passport.json / loan.json / thunder.json
   metadata.json               normalized summary

@@ -126,7 +126,7 @@ if (!sim) {
     }
   });
 
-  test('e2e: magazine loan archives to verified pages, assets and a valid fixed-layout EPUB', async (t) => {
+  test('e2e: magazine loan archives to an EPUB-only folder that carries the content losslessly', async (t) => {
     let unzip;
     try {
       execFileSync('unzip', ['-v'], { stdio: 'ignore' });
@@ -150,30 +150,66 @@ if (!sim) {
 
       assert.equal(path.basename(bookDir), 'M. Editor - E2E Magazine');
 
-      // decoded pages land at their openbook paths, exactly as decoded
-      // (decodePage runs namespaceSvg, so the plain fixture svg gains its namespaces)
-      assert.equal(fs.readFileSync(path.join(bookDir, 'pages/1.xhtml'), 'utf8'), namespaceSvg(pageBody(1)));
-      assert.equal(fs.readFileSync(path.join(bookDir, 'pages/2.xhtml'), 'utf8'), namespaceSvg(pageBody(2)));
-
-      // one shared asset, fetched once and stored plainly
-      assert.ok(fs.readFileSync(path.join(bookDir, 'assets/urlHash-1.jpg')).equals(deterministicBytes(2048 + 1 * 31)));
-      assert.ok(!fs.existsSync(path.join(bookDir, 'assets/urlHash-2.jpg')), 'shared asset is deduplicated');
+      // EPUB-only folder: no loose copies of the content anywhere in the archive
+      assert.ok(!fs.existsSync(path.join(bookDir, 'pages')), 'no loose pages/');
+      assert.ok(!fs.existsSync(path.join(bookDir, 'assets')), 'no loose assets/');
+      assert.ok(!fs.existsSync(path.join(bookDir, 'cover.jpg')), 'no loose cover.jpg');
       assert.ok(sim.read.playerHadCookie, 'read-host player fetch must carry the session cookie');
 
-      // EPUB: present, spec-valid, carries the pages and fixed-layout markers
+      // the EPUB is present, spec-valid, and carries the content byte-for-byte
       const epubPath = path.join(bookDir, 'E2E Magazine.epub');
       const epub = fs.readFileSync(epubPath);
       assert.ok(epub.length > 1000);
       if (unzip) execFileSync('unzip', ['-t', epubPath], { stdio: 'pipe' });
       assert.equal(epub.readUInt16LE(8), 0, 'mimetype entry is stored (method 0)');
+
+      if (unzip) {
+        const inEpub = (entry) => execFileSync('unzip', ['-p', epubPath, `OEBPS/${entry}`]);
+        // decoded pages, exactly as decoded, embedded verbatim in the reader-required
+        // XHTML shell (wrapPage: fixed prefix + body + '\n</html>\n' — recoverable by
+        // unwrapping; a template change here must be a conscious decision). Assets and
+        // the cover are stored byte-for-byte.
+        const wrapped = (body) =>
+          `<?xml version="1.0" encoding="utf-8"?>\n` +
+          `<!DOCTYPE html>\n` +
+          `<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">\n` +
+          `<head>\n  <meta charset="utf-8"/>\n  <title></title>\n` +
+          `  <meta name="viewport" content="width=800, height=1200"/>\n` +
+          `  <style>html,body{margin:0;padding:0}svg,img{display:block;max-width:100%}</style>\n` +
+          `</head>\n${body}\n</html>\n`;
+        assert.equal(inEpub('pages/1.xhtml').toString('utf8'), wrapped(namespaceSvg(pageBody(1))));
+        assert.equal(inEpub('pages/2.xhtml').toString('utf8'), wrapped(namespaceSvg(pageBody(2))));
+        // the shared asset, fetched once and stored byte-for-byte
+        assert.ok(inEpub('assets/urlHash-1.jpg').equals(deterministicBytes(2048 + 1 * 31)));
+        const inEpubFails = (entry) => {
+          try {
+            execFileSync('unzip', ['-p', epubPath, `OEBPS/${entry}`]);
+            return false;
+          } catch {
+            return true; // unzip exits nonzero when the entry does not exist
+          }
+        };
+        assert.ok(inEpubFails('assets/urlHash-2.jpg'), 'shared asset is deduplicated');
+        // the cover rides inside the EPUB too
+        assert.ok(inEpub('cover.jpg').equals(deterministicBytes(3000)));
+      }
+
       const meta = JSON.parse(fs.readFileSync(path.join(bookDir, 'metadata.json'), 'utf8'));
       assert.equal(meta.type, 'magazine');
       assert.equal(meta.fixedLayout, true);
       assert.equal(meta.pages, 2);
       assert.equal(meta.assets, 1);
       assert.equal(meta.publisher, 'Test Press'); // from openbook creator role pbl
-    assert.equal(meta.library, 'testlib');
-    assert.equal(meta.generator.name, 'libby-archiver');
+      assert.equal(meta.library, 'testlib');
+      assert.equal(meta.generator.name, 'libby-archiver');
+
+      // the per-run staging dir is always cleaned up, even though the payloads it held
+      // never touched the archive folder
+      assert.deepEqual(
+        fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('libby-epub-')),
+        [],
+        'no staging dirs left behind',
+      );
 
       assertManifestCovers(bookDir); // every file, README.txt included
     } finally {
