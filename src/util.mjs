@@ -6,7 +6,6 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
 
 export const MANIFEST_NAME = 'manifest.sha256';
 const MARKER_NAME = '.libby-archive.json';
@@ -141,6 +140,11 @@ export function generatorInfo() {
  * trusted as-is; a wrong digest would produce a wrong manifest.
  */
 export async function writeManifest(dir, { known = {} } = {}) {
+  // Lazy crypto (#9): hashing is the only crypto use in this module, and keeping
+  // node:crypto out of the static import graph lets light commands (`where`,
+  // `init`/`search`/`info` startup) skip its ~2.4 ms startup cost. Resolved once
+  // per manifest pass, outside the per-file loop and worker setup below.
+  const { createHash } = await import('node:crypto');
   const rels = [];
   const walk = (d, rel = '') => {
     for (const name of fs.readdirSync(d).sort()) {
@@ -158,7 +162,7 @@ export async function writeManifest(dir, { known = {} } = {}) {
   const hashOne = async (r, buf) => {
     const pre = known[r];
     if (pre) return `${pre}  ${r}`;
-    const hash = crypto.createHash('sha256');
+    const hash = createHash('sha256');
     const fh = await fs.promises.open(path.join(dir, r), 'r');
     try {
       // regular files only (walk recursed the directories): a short read is EOF

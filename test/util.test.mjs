@@ -10,6 +10,7 @@ import {
   cleanHtml,
   assetName,
   safeJoin,
+  writeFileAtomic,
   writeManifest,
   claimBookDir,
 } from '../src/util.mjs';
@@ -46,6 +47,31 @@ test('safeJoin refuses paths that escape the base directory', () => {
   assert.throws(() => safeJoin(base, '/etc/passwd'), /unsafe path/);
   assert.throws(() => safeJoin(base, 'C:\\evil'), /unsafe path/);
   assert.throws(() => safeJoin(base, ''), /unsafe path/);
+});
+
+// Pin the atomic-write contract: content arrives via temp+rename, a failed rename
+// cleans up its temp file and rethrows, and the target is never left truncated.
+test('writeFileAtomic renames atomically and cleans its temp file on failure', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libby-atomic-'));
+  try {
+    const file = path.join(dir, 'record.json');
+    writeFileAtomic(file, '{"ok":1}');
+    assert.equal(fs.readFileSync(file, 'utf8'), '{"ok":1}');
+    assert.deepEqual(fs.readdirSync(dir), ['record.json']); // no .tmp- residue on success
+
+    // rename onto a directory fails; the temp file must be removed and the error
+    // rethrown — a crash mid-write must never leave a half-written target
+    const target = path.join(dir, 'is-a-dir');
+    fs.mkdirSync(target);
+    assert.throws(() => writeFileAtomic(target, 'x'));
+    assert.deepEqual(
+      fs.readdirSync(dir).filter((n) => n.includes('.tmp-')),
+      [],
+    );
+    assert.ok(fs.statSync(target).isDirectory()); // pre-existing target untouched
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('writeManifest hashes everything except itself and .part temp files', async () => {
