@@ -37,21 +37,47 @@ function agentFor(insecureTLS) {
   return agent;
 }
 
-/** Drain a response into { status, headers, buffer, text, json }. */
+/**
+ * Drain a response into { status, headers, buffer, text, json }.
+ *
+ * text/json are compute-once getters: binary consumers (fetchBuffer → covers, magazine
+ * assets) never pay the utf8 decode + JSON.parse attempt, while JSON callers see exactly
+ * the values the old eager shape produced, computed on first read and cached (flag-based
+ * sentinels, since a failed JSON.parse legitimately yields undefined on every read).
+ */
 export function collect(res) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     res.on('data', (c) => chunks.push(c));
     res.on('end', () => {
       const buffer = Buffer.concat(chunks);
-      const text = buffer.toString('utf8');
+      let text;
       let json;
-      try {
-        json = JSON.parse(text);
-      } catch {
-        json = undefined;
-      }
-      resolve({ status: res.statusCode, headers: res.headers, buffer, text, json });
+      let textDone = false;
+      let jsonDone = false;
+      resolve({
+        status: res.statusCode,
+        headers: res.headers,
+        buffer,
+        get text() {
+          if (!textDone) {
+            text = buffer.toString('utf8');
+            textDone = true;
+          }
+          return text;
+        },
+        get json() {
+          if (!jsonDone) {
+            try {
+              json = JSON.parse(this.text);
+            } catch {
+              json = undefined;
+            }
+            jsonDone = true;
+          }
+          return json;
+        },
+      });
     });
     res.on('error', reject);
   });
