@@ -11,7 +11,8 @@
 
 import readline from 'node:readline';
 import { Writable } from 'node:stream';
-import { resolveLibrary, detectInsecureTLS, saveConfig, loadConfig, sessionPath } from './config.mjs';
+import { saveConfig, loadConfig, sessionPath } from './config.mjs';
+import { resolveLibrary, detectInsecureTLS } from './library.mjs';
 import { authenticate } from './auth.mjs';
 
 // One readline per question, so a muted-output interface (secrets) is the only stdin

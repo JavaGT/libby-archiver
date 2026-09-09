@@ -54,12 +54,5 @@ export { archiveAudiobook } from './archive.mjs';
 export { archiveReadable } from './archive-read.mjs';
 
 // Config + library discovery
-export {
-  loadConfig,
-  saveConfig,
-  configDir,
-  configPath,
-  sessionPath,
-  resolveLibrary,
-  detectInsecureTLS,
-} from './config.mjs';
+export { loadConfig, saveConfig, configDir, configPath, sessionPath } from './config.mjs';
+export { resolveLibrary, detectInsecureTLS } from './library.mjs';
