@@ -84,7 +84,9 @@ test('authed command with empty config exits 2 via missing-config help (no Refer
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libby-cfg-'));
   try {
     const env = { ...process.env, XDG_CONFIG_HOME: dir };
-    for (const k of Object.keys(env)) if (k.startsWith('LIBBY_')) delete env[k]; // hermetic: no LIBBY_* escapes
+    // hermetic: no LIBBY_* env, no NODE_OPTIONS overrides leaking into the child
+    for (const k of Object.keys(env)) if (k.startsWith('LIBBY_')) delete env[k];
+    delete env.NODE_OPTIONS;
     const r = spawnSync(process.execPath, [path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'libby.mjs'), 'list'], {
       cwd: dir, // no local ./config.json either
       env,
