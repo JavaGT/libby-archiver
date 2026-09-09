@@ -83,9 +83,11 @@ test('every command resolves its lazy modules to the functions the CLI destructu
 test('authed command with empty config exits 2 via missing-config help (no ReferenceError)', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libby-cfg-'));
   try {
+    const env = { ...process.env, XDG_CONFIG_HOME: dir };
+    for (const k of Object.keys(env)) if (k.startsWith('LIBBY_')) delete env[k]; // hermetic: no LIBBY_* escapes
     const r = spawnSync(process.execPath, [path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'libby.mjs'), 'list'], {
       cwd: dir, // no local ./config.json either
-      env: { ...process.env, XDG_CONFIG_HOME: dir },
+      env,
       encoding: 'utf8',
     });
     assert.equal(r.status, 2, `expected exit 2, stderr: ${r.stderr}`);
