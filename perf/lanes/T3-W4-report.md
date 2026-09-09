@@ -52,6 +52,14 @@ In-process import cost of `src/config.mjs` (file-based, fresh process):
 after 9.7 / 10.1 ms — unchanged within noise; the per-call `await import` is
 free after first resolution.
 
+Lazy-import cold/warm cost (fresh processes, 5 reps each): `await
+import('node:crypto')` measured directly — cold 1.78–2.72 ms (median ~1.8),
+warm ~0.01 ms. A whole `writeManifest` call on a 1-file fixture — cold
+2.19–2.38 ms, warm 0.18–0.21 ms — so the crypto resolution is the entire
+first-call premium. Immaterial beside archive I/O (a real manifest pass spends
+seconds on reads + SHA), but it is the one-time cost a tiny resume manifest
+pays; noted for that case.
+
 **Verdict: success.** `where − help` drops from ~2.3 ms to ~0.1–1.3 ms
 (median ~0.4 across the three controlled passes), inside the issue's ~1 ms
 target. The static graph of `config.mjs` is transitively crypto-free, so
@@ -66,6 +74,30 @@ partly contaminated. File-based probes are the honest vehicle: bare
 `node file.mjs` loads no crypto (`process.moduleLoadList` verified). The true
 CLI-level crypto cost was the ~1.3 ms `where` delta above, consistent with the
 in-process 3.40 → 1.87 ms config-import measurement.
+
+## Review notes (round 1 — documentation completions, no code changes)
+
+- **Cold-call cost of the lazy import**: measured and recorded above (crypto
+  `await import` cold ~1.8 ms / warm ~0.01 ms; `writeManifest` entry cold
+  ~2.2–2.4 ms / warm ~0.2 ms). Immaterial beside archive I/O; flagged for tiny
+  resume manifests, which pay it once per process.
+- **Import-failure semantics shift**: with the static import, a crypto load
+  failure would have failed at module-load time; now it surfaces as a runtime
+  rejection from `writeManifest` (src/util.mjs:147). For a built-in module the
+  risk is nil — `node:crypto` ships inside the Node binary, no loader
+  resolution, no fs lookup, no network.
+- **Scope of the static-graph proof**: the `process.moduleLoadList` probe is
+  runtime-specific evidence (Node 26.7.0 on this machine does not *load* crypto
+  when importing `src/config.mjs`), not a universal transitive-graph proof for
+  every Node version. The structural argument stands on its own: `config.mjs`
+  statically imports fs/os/path + `util.mjs`, and `util.mjs` now statically
+  imports fs/path only.
+- **PID-only temp-name entropy is pre-existing**: `writeFileAtomic`'s temp name
+  is `` `${file}.tmp-${process.pid}` `` (src/util.mjs:89-90) — identical on base
+  `6a021b4`, not introduced by #9. Adequate for the current call sites
+  (`writeJson`/`saveConfig` are serialized sync writes within one process);
+  same-PID concurrent writers to one target could collide. Out of #9 scope
+  (that lane is no-behavior-change); recorded here for visibility.
 
 ## Verification
 
