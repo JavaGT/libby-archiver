@@ -154,7 +154,7 @@ async function resolveLibraryKey(args) {
 }
 
 async function buildConfig(args) {
-  const { loadConfig } = await load.config();
+  const { loadConfig, sessionPath } = await load.config();
   const file = loadConfig();
   const cfg = {
     cardNumber: args.card ?? process.env.LIBBY_CARD ?? file.cardNumber,
