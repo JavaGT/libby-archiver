@@ -65,3 +65,36 @@ bootstrap/wizard really ran there) and pass on the fixed tree.
 - `git diff --stat` at commits: only bin/libby.mjs (+30/−0 across both) and
   test/cli-lazy.test.mjs (+71); report added separately. src/ untouched.
 - Commits: 8558af7 (#10), 6e01dad (#11), report commit (this file).
+
+## Review round 1 (two MINOR findings — addressed, test-only)
+
+Findings against 8558af7/6e01dad: (1) the borrow-family guard was pinned only
+for `borrow`; (2) the pins were not network-hermetic — a validation-order
+regression could attempt a real OverDrive request, the session-file assertion
+being only a side-effect signal.
+
+Fixes (bin/libby.mjs unchanged from 6e01dad):
+
+- Table-driven pin spawns all four guarded commands (borrow/return/hold/
+  unhold); the standalone borrow test is folded into it, no duplicate.
+- New `test/helpers/deny-net.mjs` (registration preload) +
+  `deny-net-loader.mjs` (resolve hook), passed to the child as a direct argv
+  `--import` (NODE_OPTIONS stays stripped). Grep-verified 2026-09-11 that
+  every network I/O site in src/ imports `node:https` via `src/http.mjs` or
+  `src/sentry.mjs` — nothing in the repo touches `node:http`, `node:net/dns`,
+  or `fetch()`. Deny set: `node:https`, `node:http`, and `src/{http,sentry,
+  auth,init}.mjs` (the wire layer every network-capable module imports at its
+  top, plus the auth/wizard entries the two tickets are about); `config.mjs`/
+  `util.mjs` remain loadable (fs-only) so buildConfig still runs. Applied to
+  all three pins; each happy path also asserts the denial error never appears,
+  which keeps an over-broad deny set from hiding as a silent pass.
+- Regression proof (local experiment, NOT committed): with the guards moved
+  behind `authenticate` and the init help gate removed, all three pins fail
+  deterministically in ~45-50 ms with `network denied in test pin …
+  ../src/sentry.mjs` — zero network, versus the ~0.7-1.6 s live-path failures
+  observed on base. bin/libby.mjs verified byte-clean after revert.
+
+Checks after the round-1 fix: `node --test test/cli-lazy.test.mjs` 6 pass /
+0 fail; full `node --test` 91 pass / 0 fail (the two counts above the
+previous 89 are the helper files themselves, which node --test sweeps from
+`test/` as zero-test files and passes trivially).

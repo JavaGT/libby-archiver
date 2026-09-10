@@ -7,6 +7,27 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { COMMANDS, load } from '../bin/libby.mjs';
 
+const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'libby.mjs');
+const DENY_NET = path.join(path.dirname(fileURLToPath(import.meta.url)), 'helpers', 'deny-net.mjs');
+
+// Spawn the CLI hermetically for the validation-order pins (#10/#11): no
+// LIBBY_* env, no NODE_OPTIONS, config rooted at `configHome` (a temp dir),
+// and `--import` of the network-denial preload so a validation-order
+// regression crashes the child deterministically instead of making a real
+// OverDrive request. The deny set mirrors the wire/auth modules behind the
+// USAGE table (auth for #10, init for #11, plus the http/sentry wire layer
+// they pull) — see test/helpers/deny-net-loader.mjs.
+function spawnPin(argv, configHome) {
+  const env = { ...process.env, XDG_CONFIG_HOME: configHome };
+  for (const k of Object.keys(env)) if (k.startsWith('LIBBY_')) delete env[k];
+  delete env.NODE_OPTIONS;
+  return spawnSync(process.execPath, ['--import', DENY_NET, CLI, ...argv], {
+    cwd: configHome,
+    env,
+    encoding: 'utf8',
+  });
+}
+
 // command → lazy modules its branch awaits, and the named exports it destructures.
 // Catches typos in bin/libby.mjs's loader map and renames in src/ that would
 // otherwise only surface when the command actually runs against OverDrive.
@@ -103,46 +124,42 @@ test('authed command with empty config exits 2 via missing-config help (no Refer
 // #10: a no-target `libby archive` must exit 2 with usage BEFORE any config or
 // session work. --card/--library/--website are supplied so buildConfig cannot
 // be the early exit, and --session points at a nonexistent path: if validation
-// were ordered behind authenticate, the child would bootstrap chips over the
-// network (creating that session file) or fail with a network error instead —
-// so the exit code, message, and absent session file together pin the order.
+// were ordered behind authenticate, the denied wire/auth import crashes the
+// child (zero network) instead of it ever minting chips — so the exit code,
+// message, absent session file, and absence of the denial error pin the order.
 test('archive without --all/--title exits 2 before session bootstrap (#10)', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libby-args-'));
   try {
     const session = path.join(dir, 'never-created-session.json');
-    const env = { ...process.env, XDG_CONFIG_HOME: dir };
-    for (const k of Object.keys(env)) if (k.startsWith('LIBBY_')) delete env[k];
-    delete env.NODE_OPTIONS;
-    const cli = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'libby.mjs');
-    const r = spawnSync(process.execPath, [cli, 'archive',
+    const r = spawnPin(['archive',
       '--card', '123456', '--library', 'some-library', '--website', '1234',
-      '--session', session], { cwd: dir, env, encoding: 'utf8' });
+      '--session', session], dir);
     assert.equal(r.status, 2, `expected exit 2, stderr: ${r.stderr}`);
     assert.match(r.stderr, /Specify what to archive/);
+    assert.doesNotMatch(`${r.stdout}${r.stderr}`,
+      /network denied|Missing config|Authenticated|Minting/);
     assert.ok(!fs.existsSync(session), 'authenticate must not run: session file was created');
-    assert.doesNotMatch(`${r.stdout}${r.stderr}`, /Missing config|Authenticated|Minting/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
-// #10: same shape for the borrow family — a missing id exits 2 with usage
-// before authenticate's network round trip.
-test('borrow without an id exits 2 before session bootstrap (#10)', () => {
+// #10: the borrow family shares one guard — pin all four so a future edit
+// cannot bypass it for a single command. Same shape as the archive pin.
+test('borrow/return/hold/unhold without an id exit 2 before session bootstrap (#10)', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libby-args-'));
   try {
     const session = path.join(dir, 'never-created-session.json');
-    const env = { ...process.env, XDG_CONFIG_HOME: dir };
-    for (const k of Object.keys(env)) if (k.startsWith('LIBBY_')) delete env[k];
-    delete env.NODE_OPTIONS;
-    const cli = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'libby.mjs');
-    const r = spawnSync(process.execPath, [cli, 'borrow',
-      '--card', '123456', '--library', 'some-library', '--website', '1234',
-      '--session', session], { cwd: dir, env, encoding: 'utf8' });
-    assert.equal(r.status, 2, `expected exit 2, stderr: ${r.stderr}`);
-    assert.match(r.stderr, /Usage: libby borrow <id>/);
+    for (const command of ['borrow', 'return', 'hold', 'unhold']) {
+      const r = spawnPin([command,
+        '--card', '123456', '--library', 'some-library', '--website', '1234',
+        '--session', session], dir);
+      assert.equal(r.status, 2, `${command}: expected exit 2, stderr: ${r.stderr}`);
+      assert.match(r.stderr, new RegExp(`^Usage: libby ${command} <id>`));
+      assert.doesNotMatch(`${r.stdout}${r.stderr}`,
+        /network denied|Missing config|Authenticated|Minting/);
+    }
     assert.ok(!fs.existsSync(session), 'authenticate must not run: session file was created');
-    assert.doesNotMatch(`${r.stdout}${r.stderr}`, /Missing config|Authenticated|Minting/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -150,21 +167,19 @@ test('borrow without an id exits 2 before session bootstrap (#10)', () => {
 
 // #11: `libby init --help` must print usage and never run the wizard, which
 // network-probes and re-authenticates. XDG_CONFIG_HOME points at an empty temp
-// dir so even a regression cannot touch any real config; the wizard's progress
-// strings ("Checking connection", "Saved") must never appear.
+// dir so even a regression cannot touch any real config, and the denial loader
+// crashes the child if the wizard path ever imports the wire/auth chain; the
+// wizard's progress strings ("Checking connection", "Saved") must never appear.
 test('init --help prints usage without running the wizard (#11)', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libby-init-help-'));
   try {
-    const env = { ...process.env, XDG_CONFIG_HOME: dir };
-    for (const k of Object.keys(env)) if (k.startsWith('LIBBY_')) delete env[k];
-    delete env.NODE_OPTIONS;
-    const cli = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'libby.mjs');
     for (const flag of ['--help', '-h']) {
-      const r = spawnSync(process.execPath, [cli, 'init', flag], { cwd: dir, env, encoding: 'utf8' });
+      const r = spawnPin(['init', flag], dir);
       assert.equal(r.status, 0, `init ${flag}: expected exit 0, stderr: ${r.stderr}`);
       assert.match(r.stdout, /libby init/);
       assert.match(r.stdout, /interactive setup/);
-      assert.doesNotMatch(`${r.stdout}${r.stderr}`, /Checking connection|Saved/);
+      assert.doesNotMatch(`${r.stdout}${r.stderr}`,
+        /network denied|Checking connection|Saved/);
     }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
