@@ -98,3 +98,15 @@ Checks after the round-1 fix: `node --test test/cli-lazy.test.mjs` 6 pass /
 0 fail; full `node --test` 91 pass / 0 fail (the two counts above the
 previous 89 are the helper files themselves, which node --test sweeps from
 `test/` as zero-test files and passes trivially).
+
+## Review round 2 (harness honesty — addressed, test-only)
+
+- Deny set broadened to `node:http2`, `node:net`, `node:tls` (unused in src/
+  today; closes the named gaps cheaply).
+- Comment corrected: names the direct `node:https` importers
+  (src/library.mjs:8, src/openbook.mjs:19) and states the honest scope — the
+  hook covers the ESM import graph only; require()/createRequire()-shaped
+  network imports would NOT be intercepted (none exist in src/, grep-verified).
+
+Checks: focused 6 pass / 0 fail; full 91 pass / 0 fail. Commit: see
+"review round 2 addressed" comments on #10/#11.
