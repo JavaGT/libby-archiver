@@ -338,6 +338,20 @@ async function main() {
     return;
   }
 
+  // Cheap arg validation BEFORE buildConfig/authenticate: a bad invocation must
+  // never pay the session round trip (same principle as the unknown-command
+  // gate above). The command branches below keep their own checks as defense
+  // in depth; these early exits make the no-target error paths unreachable.
+  if (command === 'archive' && !args.title && !args.all) {
+    console.error('Specify what to archive: --all, or --title <id>.');
+    console.error('See your loans with `libby list`.');
+    process.exit(2);
+  }
+  if (['borrow', 'return', 'hold', 'unhold'].includes(command) && !args._[1] && !args.title) {
+    console.error(`Usage: libby ${command} <id>   (find ids with \`libby search\`)`);
+    process.exit(2);
+  }
+
   const cfg = await buildConfig(args);
   const { authenticate } = await load.auth();
   const { client, identity, cardId } = await authenticate(cfg);

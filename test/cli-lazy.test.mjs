@@ -99,3 +99,51 @@ test('authed command with empty config exits 2 via missing-config help (no Refer
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// #10: a no-target `libby archive` must exit 2 with usage BEFORE any config or
+// session work. --card/--library/--website are supplied so buildConfig cannot
+// be the early exit, and --session points at a nonexistent path: if validation
+// were ordered behind authenticate, the child would bootstrap chips over the
+// network (creating that session file) or fail with a network error instead —
+// so the exit code, message, and absent session file together pin the order.
+test('archive without --all/--title exits 2 before session bootstrap (#10)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libby-args-'));
+  try {
+    const session = path.join(dir, 'never-created-session.json');
+    const env = { ...process.env, XDG_CONFIG_HOME: dir };
+    for (const k of Object.keys(env)) if (k.startsWith('LIBBY_')) delete env[k];
+    delete env.NODE_OPTIONS;
+    const cli = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'libby.mjs');
+    const r = spawnSync(process.execPath, [cli, 'archive',
+      '--card', '123456', '--library', 'some-library', '--website', '1234',
+      '--session', session], { cwd: dir, env, encoding: 'utf8' });
+    assert.equal(r.status, 2, `expected exit 2, stderr: ${r.stderr}`);
+    assert.match(r.stderr, /Specify what to archive/);
+    assert.ok(!fs.existsSync(session), 'authenticate must not run: session file was created');
+    assert.doesNotMatch(`${r.stdout}${r.stderr}`, /Missing config|Authenticated|Minting/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// #10: same shape for the borrow family — a missing id exits 2 with usage
+// before authenticate's network round trip.
+test('borrow without an id exits 2 before session bootstrap (#10)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libby-args-'));
+  try {
+    const session = path.join(dir, 'never-created-session.json');
+    const env = { ...process.env, XDG_CONFIG_HOME: dir };
+    for (const k of Object.keys(env)) if (k.startsWith('LIBBY_')) delete env[k];
+    delete env.NODE_OPTIONS;
+    const cli = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'libby.mjs');
+    const r = spawnSync(process.execPath, [cli, 'borrow',
+      '--card', '123456', '--library', 'some-library', '--website', '1234',
+      '--session', session], { cwd: dir, env, encoding: 'utf8' });
+    assert.equal(r.status, 2, `expected exit 2, stderr: ${r.stderr}`);
+    assert.match(r.stderr, /Usage: libby borrow <id>/);
+    assert.ok(!fs.existsSync(session), 'authenticate must not run: session file was created');
+    assert.doesNotMatch(`${r.stdout}${r.stderr}`, /Missing config|Authenticated|Minting/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
