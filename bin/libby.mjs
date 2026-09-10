@@ -230,6 +230,22 @@ async function main() {
     return;
   }
   if (command === 'init') {
+    // `libby init --help` prints usage and must not run the wizard: the wizard
+    // network-probes and re-authenticates as a side effect (#11).
+    // Note `--help` lands in args as a flag key even with no value, and `-h`
+    // (single dash) parses as a positional, hence the two checks.
+    if ('help' in args || args._.slice(1).includes('-h')) {
+      console.log(`libby init — interactive setup (run this first)
+
+  libby init
+
+Prompts for your library key, card number, and PIN, probes the library,
+verifies the card works, and saves the config.
+
+Config flags (--card --pin --library --website --out --session) can override
+the saved config on any command — see \`libby help\`.`);
+      return;
+    }
     const { runInit } = await load.init();
     return runInit();
   }

@@ -147,3 +147,26 @@ test('borrow without an id exits 2 before session bootstrap (#10)', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// #11: `libby init --help` must print usage and never run the wizard, which
+// network-probes and re-authenticates. XDG_CONFIG_HOME points at an empty temp
+// dir so even a regression cannot touch any real config; the wizard's progress
+// strings ("Checking connection", "Saved") must never appear.
+test('init --help prints usage without running the wizard (#11)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libby-init-help-'));
+  try {
+    const env = { ...process.env, XDG_CONFIG_HOME: dir };
+    for (const k of Object.keys(env)) if (k.startsWith('LIBBY_')) delete env[k];
+    delete env.NODE_OPTIONS;
+    const cli = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'libby.mjs');
+    for (const flag of ['--help', '-h']) {
+      const r = spawnSync(process.execPath, [cli, 'init', flag], { cwd: dir, env, encoding: 'utf8' });
+      assert.equal(r.status, 0, `init ${flag}: expected exit 0, stderr: ${r.stderr}`);
+      assert.match(r.stdout, /libby init/);
+      assert.match(r.stdout, /interactive setup/);
+      assert.doesNotMatch(`${r.stdout}${r.stderr}`, /Checking connection|Saved/);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
