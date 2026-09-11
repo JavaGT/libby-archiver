@@ -50,3 +50,14 @@
 - 09:01 — hostile reviews dispatched in background via opencode2: Luna (security/authz/
   data-integrity) on 8925ccc; deepseek-v4-flash (test honesty) on 57c8d94. Coordinator full
   gate (node --test) after verdicts, then close #17.
+- 09:05 — hostile review round 1 (both READ-ONLY via opencode2, evidence file:line):
+  Luna security/data-integrity on 8925ccc = CHANGES REQUESTED — sync()'s `reuse` not bound to
+  identity (cross-identity data-integrity hazard if a future caller mismatches payload and
+  bearer; no current CLI path misuses it). Luna test-honesty on 57c8d94 = CHANGES REQUESTED —
+  report's "both pins fail pre-change" is false (only cached-session pin fails; fallback pin
+  passing pre-change is expected). Counting path verified real, assertions strong, focused 6/6.
+  NOTE: both seats ran gpt-5.6-luna (default routing); re-review round 2 will send test-honesty
+  to the deepseek seat explicitly with --model.
+- 09:07 — both findings routed back to the SAME implementer session: (1) envelope syncData as
+  {identity, json} + reuse only on identity match, mismatch falls back to fetch, new pin for
+  the mismatch path; (2) correct the report + post a correction comment on #17.
