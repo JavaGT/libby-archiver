@@ -11,7 +11,8 @@ at ~568 ms median.
 
 Fix — REUSE, not removal (smallest sound intervention per the ticket):
 commits **8925ccc** (source) and **57c8d94** (pins), +275/−13 across
-src/auth.mjs, src/loans.mjs, bin/libby.mjs, test/.
+src/auth.mjs, src/loans.mjs, bin/libby.mjs, test/. Review round 1 fix at
+**1f4033e** (see Review below).
 
 - `src/auth.mjs`: the cached-session verify now returns the verified payload
   (`result === 'synchronized'`) or null via `verifiedSync()`; the boolean
@@ -44,9 +45,15 @@ src/auth.mjs, src/loans.mjs, bin/libby.mjs, test/.
    the sim loan byte-for-byte; no-session `libby list` runs the full
    fresh-mint chain and fetches exactly once. `test/loans.test.mjs` pins the
    sync() contract: reuse never fetches, fallback fetches once, shapes
-   deep-equal. Both CLI pins **fail on the pre-change tree** (two
-   `GET /chip/sync` — regression-proven via `git archive a7e7a68` to /tmp,
-   the T5 precedent).
+   deep-equal, and (review round 1) a reuse envelope verified for a
+   DIFFERENT identity falls back to exactly one fetch with the foreign data
+   never surfacing. Regression proof (via `git archive a7e7a68` overlay, the
+   T5 precedent): the **cached-session pin fails** on the pre-change tree
+   (two `GET /chip/sync` requests logged). The **no-session fallback pin
+   passes** on the pre-change tree — expected, not regression evidence:
+   fresh-mint already fetched exactly once (authenticate never synced there),
+   so that pin guards the fallback's continued correctness rather than
+   demonstrating the fix.
 3. **Byte-compatibility** — live: `libby list` stdout byte-identical
    base-vs-after in all 9 interleaved rounds (`libby auth` stdout identical
    too); 0 bad exits. Hermetic: the pin asserts the exact rendered line.
@@ -91,3 +98,23 @@ cli-lazy's USAGE table only imports `authenticate`).
   src/loans.mjs only; 57c8d94 = test/ only (+ nothing else). No foreign
   files touched; `artifacts/**` and `perf/results-t7-regression.json`
   (foreign untracked) left alone.
+
+## Review
+
+- Round 1 (Luna, hostile, both lenses): **CHANGES REQUESTED** —
+  SECURITY: `reuse` was not bound to `identity` (a caller could pair
+  identity-B's bearer with identity-A's payload); TEST HONESTY: this report
+  claimed both CLI pins fail pre-change, but only the cached-session pin
+  does — the fallback pin passes pre-change, as expected.
+- Fixes at **1f4033e**: `authenticate()` returns the payload enveloped as
+  `syncData: { identity, json }` (brand-new in this wave, no external
+  consumers) and `loans.sync()` reuses it only when `reuse.identity ===`
+  the bearer `identity`, else fetches exactly once; new unit pin proves a
+  mismatched pair falls back to one fetch with the foreign data never
+  surfacing (CLI pins unchanged — authenticate's envelope always matches
+  its own returned identity). The pin-claim paragraph above is corrected
+  (see criterion 2), and a correction comment was posted on #17 (the
+  57c8d94 commit message contains the same overclaim; history is
+  immutable, the correction lives here and on the ticket). Suite after the
+  fix: focused 19/19, full `node --test` **100 pass / 0 fail**; A/B
+  numbers unaffected (the envelope adds no work on the hot path).
