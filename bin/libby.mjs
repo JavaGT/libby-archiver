@@ -398,12 +398,17 @@ the saved config on any command — see \`libby help\`.`);
   // cached-session path authenticate knows identity+cardId before its ~verify
   // round trip, so it hands them here and the GET hides under the verify.
   // Same call borrowTitle would make; its result is passed via opts.periods.
-  // Lending periods are (cardId, titleId) properties, not session state: if the
-  // verify fails and a fresh identity is minted for the same card, the kicked
-  // result stays valid. The branch owns the promise's errors at its await.
-  let periodsP;
+  // Lending periods are (cardId, titleId) properties, so a kicked result made
+  // with the cached identity stays valid if the verify fails and a fresh
+  // identity is minted for the same card — but only if the kick itself
+  // succeeded against a still-accepted token, so the branch uses it only when
+  // the returned identity still matches (review round 1); on mismatch the
+  // result is discarded and borrowTitle re-fetches serially, exactly the old
+  // re-bootstrap path. The branch owns the promise's errors at its await.
+  let periodsP, periodsIdentity;
   cfg.onCachedSession = (client, identity, cardId) => {
-    if (command !== 'borrow' || args.period) return;
+    if (command !== 'borrow' || args.period || !titleId) return;
+    periodsIdentity = identity;
     periodsP = (async () => {
       const { getLoanPeriods } = await load.checkout();
       return getLoanPeriods(client, identity, cardId, String(titleId));
@@ -447,15 +452,17 @@ the saved config on any command — see \`libby help\`.`);
           }
         }
         const { borrowTitle } = await load.checkout();
+        // #16: use the kicked result only if verify kept the identity the kick
+        // was made with; after a re-bootstrap that identity is dead, so discard
+        // it and let borrowTitle re-GET with the fresh one (the old serial
+        // behavior — same handler, same failure shape, if the re-GET fails).
+        const kickUsable = !!periodsP && periodsIdentity === identity;
         const loan = await borrowTitle(client, identity, cardId, String(titleId), {
           titleFormat,
           luckyDay: !!args.luckyday,
           period,
           units: period ? 'days' : undefined,
-          // #16: the kicked periods result (settled under the session verify by
-          // now) skips borrowTitle's own serial GET; a kick failure surfaces the
-          // same error object through the same handler as the serial GET did.
-          ...(periodsP ? { periods: await periodsP } : {}),
+          ...(kickUsable ? { periods: await periodsP } : {}),
         });
         console.log(`Borrowed: ${loan.title}${loan.firstCreatorName ? ` — ${loan.firstCreatorName}` : ''}`);
         console.log(`  due ${loan.expireDate ?? loan.expires ?? '?'}  (checkoutId ${loan.checkoutId})`);
