@@ -36,3 +36,17 @@
   T7-W1 dispatched (src/auth.mjs, src/loans.mjs, bin/libby.mjs, test/, perf/lanes/T7-W1-report.md).
 - Next: milestone commits from T7-W1 → hostile review via opencode2 (different model, read-only)
   → reconcile → close #17 → final receipt.
+- 08:45 — T7-W1 implementation commit 8925ccc (src/auth.mjs verifiedSync payload-or-null,
+  additive syncData on authenticate; src/loans.mjs {reuse} + fallback; bin/libby.mjs two sites).
+- 08:52 — pins commit 57c8d94 (test/sync-reuse.test.mjs counting-sim CLI pins: exactly ONE
+  /chip/sync cached-path, exactly one fallback fetch fresh-path; both regression-proven failing
+  on pre-change a7e7a68 via git archive; test/loans.test.mjs shape pins). Focused 18/18.
+- 08:58 — report commit d349786 (perf/lanes/T7-W1-report.md). A/B 9 interleaved medians,
+  session COPY, read-only commands only: libby list 2676.2 → 2121.5 ms (−554.7 ms; predicted
+  ~568); list−auth delta 783.9 → 162.4 ms; stdout byte-identical 9/9; full node --test 99/99.
+  Deviation: verify() → verifiedSync() (single caller; boolean gate preserved). Issue evidence
+  comment 5640506237 posted by the lane. Ground truth verified by coordinator (git log, report,
+  comment).
+- 09:01 — hostile reviews dispatched in background via opencode2: Luna (security/authz/
+  data-integrity) on 8925ccc; deepseek-v4-flash (test honesty) on 57c8d94. Coordinator full
+  gate (node --test) after verdicts, then close #17.
