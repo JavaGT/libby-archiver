@@ -369,6 +369,21 @@ the saved config on any command — see \`libby help\`.`);
   }
 
   const cfg = await buildConfig(args);
+  // #13: borrow's catalog format lookup is auth-free (library key + pooled
+  // agent only), so it overlaps the session bootstrap here instead of stacking
+  // a full catalog round trip after it. The borrow branch awaits this promise
+  // where it used to start the lookup — same call, same error handling.
+  let formatLookup;
+  if (command === 'borrow' && !(args.format && args.format !== 'all')) {
+    formatLookup = (async () => {
+      const { library, insecureTLS } = await resolveLibraryKey(args);
+      const { getTitle } = await load.discover();
+      return getTitle(library, String(args._[1] ?? args.title), { insecureTLS, characteristics: false });
+    })();
+    // Never unhandled if auth fails (or exits) first: the borrow branch owns
+    // the real error handling where this promise is awaited.
+    formatLookup.catch(() => {});
+  }
   const { authenticate } = await load.auth();
   const { client, identity, cardId } = await authenticate(cfg);
 
@@ -398,10 +413,8 @@ the saved config on any command — see \`libby help\`.`);
         // with an audiobook title_format; --format only overrides.
         let titleFormat = args.format && args.format !== 'all' ? args.format : undefined;
         if (!titleFormat) {
-          const { library, insecureTLS } = await resolveLibraryKey(args);
           try {
-            const { getTitle } = await load.discover();
-            titleFormat = (await getTitle(library, String(titleId), { insecureTLS, characteristics: false })).type;
+            titleFormat = (await formatLookup).type;
           } catch (e) {
             console.error(`Could not look up the title's format (${e.message}).`);
             console.error('Pass --format <audiobook|ebook|magazine> explicitly.');

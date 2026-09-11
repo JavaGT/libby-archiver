@@ -15,12 +15,25 @@
 // createRequire()-shaped network imports would NOT be intercepted (none exist
 // in src/ — grep-verified). config.mjs/util.mjs stay loadable (fs-only) so
 // buildConfig still runs and its missing-config defense is exercised.
+import fs from 'node:fs';
+
 const DENIED =
   /(?:^node:(?:https|http|http2|net|tls)$)|(?:\/src\/(?:http|sentry|auth|init)\.mjs$)/;
 
+// Optional denial log (#13 pin): when DENY_NET_LOG is set, every denial is
+// appended before throwing so a pin can prove WHICH wire modules a scenario
+// reached (e.g. the borrow format lookup's http.mjs must appear even though
+// auth is denied first-line). Off by default; the #10/#11 pins never set it.
 export async function resolve(specifier, context, nextResolve) {
   const resolved = await nextResolve(specifier, context);
   if (DENIED.test(resolved.url)) {
+    if (process.env.DENY_NET_LOG) {
+      try {
+        fs.appendFileSync(process.env.DENY_NET_LOG, `denied ${specifier}\n`);
+      } catch {
+        // A failed log write must not mask the denial itself.
+      }
+    }
     throw new Error(
       `network denied in test pin (test/helpers/deny-net-loader.mjs): ${specifier}`,
     );

@@ -17,8 +17,8 @@ const DENY_NET = path.join(path.dirname(fileURLToPath(import.meta.url)), 'helper
 // OverDrive request. The deny set mirrors the wire/auth modules behind the
 // USAGE table (auth for #10, init for #11, plus the http/sentry wire layer
 // they pull) — see test/helpers/deny-net-loader.mjs.
-function spawnPin(argv, configHome) {
-  const env = { ...process.env, XDG_CONFIG_HOME: configHome };
+function spawnPin(argv, configHome, extraEnv = {}) {
+  const env = { ...process.env, XDG_CONFIG_HOME: configHome, ...extraEnv };
   for (const k of Object.keys(env)) if (k.startsWith('LIBBY_')) delete env[k];
   delete env.NODE_OPTIONS;
   return spawnSync(process.execPath, ['--import', DENY_NET, CLI, ...argv], {
@@ -160,6 +160,29 @@ test('borrow/return/hold/unhold without an id exit 2 before session bootstrap (#
         /network denied|Missing config|Authenticated|Minting/);
     }
     assert.ok(!fs.existsSync(session), 'authenticate must not run: session file was created');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// #13: borrow's auth-free format lookup must be attempted BEFORE/without the
+// session bootstrap. With the denial loader every wire path fails, so the
+// ordering proof is WHICH wire modules the scenario reached: the overlapped
+// order always imports discover's http.mjs for the lookup (DENY_NET_LOG pins
+// the denial), while the pre-#13 stacked order died at the auth.mjs import and
+// never touched http.mjs — this pin fails on the pre-#13 tree.
+test('borrow format lookup is attempted without the session bootstrap (#13)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libby-borrow-lookup-'));
+  const log = path.join(dir, 'denials.log');
+  try {
+    const r = spawnPin(['borrow', 'nonexistent-title-000000',
+      '--card', '123456', '--library', 'some-library', '--website', '1234'],
+    dir, { DENY_NET_LOG: log });
+    assert.equal(r.status, 1, `expected exit 1, stderr: ${r.stderr}`);
+    assert.doesNotMatch(`${r.stdout}${r.stderr}`, /Authenticated|Minting/);
+    const denials = fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : '';
+    assert.match(denials, /denied \.{1,2}\/(src\/)?http\.mjs/,
+      'the format lookup wire layer (discover -> http.mjs) must be reached');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
