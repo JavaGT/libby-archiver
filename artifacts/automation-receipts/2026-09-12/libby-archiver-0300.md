@@ -14,8 +14,12 @@
   keep-alive (W7), EPUB RAM thunks (W12/W16), borrow/periods overlaps (#13/#15). Uncovered:
   avail/info/search post-bootstrap, archive-read sequencing, loans/metadata.
 - 08:29 — `node --expose-gc perf/bench.mjs --quick --label t7-regression` (perf/results-t7-regression.json):
-  NO regressions; current ≤ baseline everywhere (zip 207→14.6ms, cfc1 67.9→21.7ms, openbook
-  62.1→10.7ms, manifest 51.9→19.8ms, help spawn 34.3→31.6ms vs 27.1ms node floor).
+  NO performance regressions — current ≤ baseline on every timing (zip 207→14.6ms, cfc1
+  67.9→21.7ms, openbook 62.1→10.7ms, manifest 51.9→19.8ms, help spawn 34.3→31.6ms vs 27.1ms
+  node floor). Qualification (Luna docs sweep returned FIX-FIRST; fixed here): zip_assembly
+  `outputBytesAgree:false` is the known intentional W12 streaming-zip layout difference —
+  present identically in perf/results-merged-waves.json and perf/results-t2-final.json — not a
+  new regression; output correctness is pinned by test/epub-integrity.test.mjs (93/93 green).
 - 08:31 — candidates inspected and DECLINED (not material, evidence in-repo):
   (a) `getAvailability` sequential chunks — AVAILABILITY_CHUNK=100 (src/discover.mjs:19); only
   >100 ids per call affected; unrealistic for a personal CLI. (b) archive-read two-phase
