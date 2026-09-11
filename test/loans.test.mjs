@@ -58,7 +58,7 @@ test('sync() reuses a supplied payload without a request; fallback fetches (#17)
   const reused = await sync(
     { requestOk: async () => { throw new Error('sync() must not fetch a reused payload'); } },
     'identity',
-    { reuse: payload },
+    { reuse: { identity: 'identity', json: payload } },
   );
   let fetches = 0;
   const fetched = await sync({
@@ -71,4 +71,26 @@ test('sync() reuses a supplied payload without a request; fallback fetches (#17)
   }, 'identity');
   assert.equal(fetches, 1, 'exactly one fetch when no payload is supplied');
   assert.deepEqual(reused, fetched, 'reuse and fetch must return the same shape');
+});
+
+// #17 review round 1: a reuse envelope is only trusted when its identity is
+// the one acting as bearer — a mismatched pair (identity-A payload, identity-B
+// bearer) must fall back to exactly one fetch and never surface the foreign
+// data.
+test('sync() refuses a reuse payload verified for a different identity (#17 review)', async () => {
+  const foreign = { cards: [{ id: 1 }], loans: [{ id: 1, cardId: 1, title: 'Foreign', type: { id: 'ebook' } }] };
+  const own = { cards: [{ id: 2 }], loans: [{ id: 2, cardId: 2, title: 'Own', type: { id: 'audiobook' } }] };
+  let fetches = 0;
+  const client = {
+    requestOk: async (method, reqPath) => {
+      fetches++;
+      assert.equal(method, 'GET');
+      assert.equal(reqPath, '/chip/sync');
+      return { json: own };
+    },
+  };
+  const r = await sync(client, 'identity-B', { reuse: { identity: 'identity-A', json: foreign } });
+  assert.equal(fetches, 1, 'mismatched reuse must fall back to exactly one fetch');
+  assert.equal(r.raw, own, 'the fresh fetch must back the result');
+  assert.equal(r.loans[0].title, 'Own', 'foreign loan data must never surface');
 });

@@ -49,8 +49,10 @@ export function sessionKey(cfg) {
  *   that depend only on the cached identity and let them overlap the verify. A
  *   synchronous throw is swallowed (the caller owns the returned promise's errors).
  * @returns {Promise<{client: SentryClient, identity: string, cardId: string,
- *   syncData?: object}>} syncData (#17) is the verified /chip/sync payload from
- *   the cached-session path; absent on the fresh-mint path, which never syncs —
+ *   syncData?: {identity: string, json: object}}>} syncData (#17) is the
+ *   /chip/sync payload verified on the cached-session path, enveloped with the
+ *   identity it was verified against (review round 1) so consumers can refuse
+ *   a mismatched pair; absent on the fresh-mint path, which never syncs —
  *   consumers must fall back to fetching (loans.sync does).
  */
 export async function authenticate(cfg) {
@@ -70,11 +72,19 @@ export async function authenticate(cfg) {
       // round trip so an authed read can hide under it. Swallow sync throws: the
       // caller owns the kick promise's error handling at its await site.
       try { cfg.onCachedSession?.(client, cached.identity, cached.cardId); } catch { }
-      const syncData = await verifiedSync(client, cached.identity);
-      if (syncData) {
+      const verified = await verifiedSync(client, cached.identity);
+      if (verified) {
         // #17: carry the verified payload out so a following loans sync in the
         // same invocation can reuse it instead of re-fetching /chip/sync.
-        return { client, identity: cached.identity, cardId: cached.cardId, syncData };
+        // Review round 1: the payload travels with the identity it was
+        // verified against, so consumers can refuse a mismatched pair
+        // (identity-A data must never surface under identity-B's bearer).
+        return {
+          client,
+          identity: cached.identity,
+          cardId: cached.cardId,
+          syncData: { identity: cached.identity, json: verified },
+        };
       }
       log('Cached session no longer valid; re-bootstrapping.');
     }
