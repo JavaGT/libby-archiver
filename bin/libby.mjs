@@ -367,18 +367,27 @@ the saved config on any command — see \`libby help\`.`);
     console.error(`Usage: libby ${command} <id>   (find ids with \`libby search\`)`);
     process.exit(2);
   }
+  // #13 review: an invalid --period is a usage error — it must exit 2 here,
+  // before buildConfig/authenticate AND before the format-lookup kick below
+  // fires its catalog GET (same principle as the gates above).
+  if (command === 'borrow' && args.period &&
+      (!Number.isInteger(Number(args.period)) || Number(args.period) <= 0)) {
+    console.error('--period must be a positive whole number of days.');
+    process.exit(2);
+  }
 
   const cfg = await buildConfig(args);
   // #13: borrow's catalog format lookup is auth-free (library key + pooled
   // agent only), so it overlaps the session bootstrap here instead of stacking
   // a full catalog round trip after it. The borrow branch awaits this promise
   // where it used to start the lookup — same call, same error handling.
+  const titleId = args._[1] ?? args.title; // derived once; the branch reuses it
   let formatLookup;
   if (command === 'borrow' && !(args.format && args.format !== 'all')) {
     formatLookup = (async () => {
       const { library, insecureTLS } = await resolveLibraryKey(args);
       const { getTitle } = await load.discover();
-      return getTitle(library, String(args._[1] ?? args.title), { insecureTLS, characteristics: false });
+      return getTitle(library, titleId, { insecureTLS, characteristics: false });
     })();
     // Never unhandled if auth fails (or exits) first: the borrow branch owns
     // the real error handling where this promise is awaited.
@@ -394,7 +403,6 @@ the saved config on any command — see \`libby help\`.`);
 
   // Account-mutating commands: borrow / return / hold / unhold. Each takes a title id.
   if (['borrow', 'return', 'hold', 'unhold'].includes(command)) {
-    const titleId = args._[1] ?? args.title;
     if (!titleId) {
       console.error(`Usage: libby ${command} <id>   (find ids with \`libby search\`)`);
       process.exit(2);

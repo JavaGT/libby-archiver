@@ -188,6 +188,25 @@ test('borrow format lookup is attempted without the session bootstrap (#13)', ()
   }
 });
 
+// #13 review: an invalid --period must exit 2 as a pure usage error — before
+// the format-lookup kick fires its catalog GET. The denial log must therefore
+// contain NO entries (no wire module reached), unlike the ordering pin above.
+test('borrow with invalid --period exits 2 before any network (#13 review)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'libby-borrow-period-'));
+  const log = path.join(dir, 'denials.log');
+  try {
+    const r = spawnPin(['borrow', 'some-title', '--period', '0',
+      '--card', '123456', '--library', 'some-library', '--website', '1234'],
+    dir, { DENY_NET_LOG: log });
+    assert.equal(r.status, 2, `expected exit 2, stderr: ${r.stderr}`);
+    assert.match(r.stderr, /--period must be a positive whole number of days/);
+    assert.equal(fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : '',
+      '', 'no wire module may be reached on this usage-error path');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // #11: `libby init --help` must print usage and never run the wizard, which
 // network-probes and re-authenticates. XDG_CONFIG_HOME points at an empty temp
 // dir so even a regression cannot touch any real config, and the denial loader
