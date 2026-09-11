@@ -393,6 +393,23 @@ the saved config on any command — see \`libby help\`.`);
     // the real error handling where this promise is awaited.
     formatLookup.catch(() => {});
   }
+  // #16: a default borrow (no --period) also needs the title's lending periods
+  // — an authed gateway GET that used to stack after the bootstrap. On the
+  // cached-session path authenticate knows identity+cardId before its ~verify
+  // round trip, so it hands them here and the GET hides under the verify.
+  // Same call borrowTitle would make; its result is passed via opts.periods.
+  // Lending periods are (cardId, titleId) properties, not session state: if the
+  // verify fails and a fresh identity is minted for the same card, the kicked
+  // result stays valid. The branch owns the promise's errors at its await.
+  let periodsP;
+  cfg.onCachedSession = (client, identity, cardId) => {
+    if (command !== 'borrow' || args.period) return;
+    periodsP = (async () => {
+      const { getLoanPeriods } = await load.checkout();
+      return getLoanPeriods(client, identity, cardId, String(titleId));
+    })();
+    periodsP.catch(() => {});
+  };
   const { authenticate } = await load.auth();
   const { client, identity, cardId } = await authenticate(cfg);
 
@@ -435,6 +452,10 @@ the saved config on any command — see \`libby help\`.`);
           luckyDay: !!args.luckyday,
           period,
           units: period ? 'days' : undefined,
+          // #16: the kicked periods result (settled under the session verify by
+          // now) skips borrowTitle's own serial GET; a kick failure surfaces the
+          // same error object through the same handler as the serial GET did.
+          ...(periodsP ? { periods: await periodsP } : {}),
         });
         console.log(`Borrowed: ${loan.title}${loan.firstCreatorName ? ` — ${loan.firstCreatorName}` : ''}`);
         console.log(`  due ${loan.expireDate ?? loan.expires ?? '?'}  (checkoutId ${loan.checkoutId})`);

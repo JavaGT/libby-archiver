@@ -29,16 +29,19 @@ export async function getLoanPeriods(client, identity, cardId, titleId) {
 
 /**
  * Borrow (check out) a title.
- * @param {object} opts  { period, units, titleFormat, luckyDay }
+ * @param {object} opts  { period, units, titleFormat, luckyDay, periods }
  *   period/units default to the title's preferred lending period.
  *   titleFormat is "audiobook" | "ebook" | "magazine" (from the search result type).
+ *   periods (#16) is a pre-fetched getLoanPeriods result — supplied when the caller
+ *   kicked the lookup earlier (overlapping the session verify); it skips the
+ *   internal GET. Extraction semantics are identical either way.
  * @returns the loan object (checkoutId, expires, title, cardId, …)
  */
 export async function borrowTitle(client, identity, cardId, titleId, opts = {}) {
   let { period, units, titleFormat, luckyDay } = opts;
 
   if (!period || !units) {
-    const periods = await getLoanPeriods(client, identity, cardId, titleId);
+    const periods = opts.periods ?? (await getLoanPeriods(client, identity, cardId, titleId));
     const pref = periods?.preference ?? periods?.options?.[periods.options.length - 1];
     if (pref) [period, units] = pref;
   }
