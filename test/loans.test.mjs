@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeLoan, audiobookLoans, readableLoans } from '../src/loans.mjs';
+import { normalizeLoan, audiobookLoans, readableLoans, sync } from '../src/loans.mjs';
 
 test('normalizeLoan keeps unknown types unknown instead of relabeling them ebook', () => {
   const video = normalizeLoan({ id: 1, cardId: 7, title: 'A Film', type: { id: 'video' } });
@@ -44,4 +44,31 @@ test('loan filters partition by type', () => {
   ];
   assert.equal(audiobookLoans(loans).length, 1);
   assert.deepEqual(readableLoans(loans).map((l) => l.type), ['ebook', 'magazine']);
+});
+
+// #17: sync() must normalize a reused /chip/sync payload (the one authenticate
+// already fetched and verified) without touching the wire, and the no-reuse
+// fallback must fetch GET /chip/sync exactly once and return the same shape.
+test('sync() reuses a supplied payload without a request; fallback fetches (#17)', async () => {
+  const payload = {
+    result: 'synchronized',
+    cards: [{ id: 7 }],
+    loans: [{ id: 9, cardId: 7, title: 'Reused', type: { id: 'audiobook' } }],
+  };
+  const reused = await sync(
+    { requestOk: async () => { throw new Error('sync() must not fetch a reused payload'); } },
+    'identity',
+    { reuse: payload },
+  );
+  let fetches = 0;
+  const fetched = await sync({
+    requestOk: async (method, reqPath) => {
+      fetches++;
+      assert.equal(method, 'GET');
+      assert.equal(reqPath, '/chip/sync');
+      return { json: payload };
+    },
+  }, 'identity');
+  assert.equal(fetches, 1, 'exactly one fetch when no payload is supplied');
+  assert.deepEqual(reused, fetched, 'reuse and fetch must return the same shape');
 });
