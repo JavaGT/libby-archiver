@@ -110,3 +110,31 @@ cached session read-only. Same 401 surface as existing issue #1; no new ticket (
 
 - None for this run's goal. Open owner decisions: #12, #14. Next action: next scheduled run
   re-audits; owner decides #12/#14 at leisure.
+
+---
+
+## Continuation addendum (owner "continue" directive, after the final block above)
+
+The owner directed "continue" after this run's receipt was already finalized at 03:27 NZST. One
+further discovery pass was executed; no new work was admitted for implementation (this run's
+50-minute box had already closed — the continuation produced evidence and tickets only).
+
+- New finding, measured: `list`/`archive`/`return` fetch the identical `GET /chip/sync` twice per
+  invocation (cached-session verify at src/auth.mjs:161 discards the payload; loans.sync at
+  src/loans.mjs:8 re-fetches it). Interleaved medians, session COPY, owner files byte-identical:
+  `auth` 1952.0 ms vs `list` 2520.2 ms → **~568 ms** second-fetch cost. Filed as **#17** (Strong)
+  with a reuse fix sketch and acceptance criteria; deliberately NOT admitted — a 3-file auth-path
+  change cannot land plus hostile review before this run's hard stop, and it is conditional on the
+  #12 owner call.
+- Duplicate-reconciliation: the 03:30 wave's #16 (speculative, return-focused) targets the same
+  redundancy from the removal-first angle. #16 ↔ #17 cross-linked with comments; reconciliation
+  guidance recorded on both (reuse answers #16; both conditional on #12).
+- Observed, untouched: the 03:30 wave (T6-W1) landed a34bf31/80e1fa3/a031bdc + receipt 9b202bb
+  (#15 closed, ~880–930 ms measured) in this shared checkout after this run finalized. Its
+  `artifacts/automation-receipts/2026-09-12/libby-archiver-0300.md` is untracked and NOT mine —
+  left untouched per shared-checkout file-safety rules.
+- Full `node --test` re-run at T6's HEAD (9b202bb): **93 pass / 0 fail** — both waves' pins coexist.
+
+Continuation status: meaningful-progression (one Strong measured finding ticketed with a
+next-wave-ready sketch; nothing admitted past the box). Receipt file commits: 8fb39ec, 8266bda,
+plus the addendum commit.
