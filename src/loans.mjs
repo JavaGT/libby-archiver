@@ -1,12 +1,16 @@
 // Sync the account and enumerate loans.
 
 /**
- * @returns {Promise<{cards: any[], loans: Loan[]}>}
+ * Enumerate the account's loans. #17: pass `reuse` — the /chip/sync payload
+ * `authenticate()` already fetched and verified for this same identity — to
+ * skip the duplicate round trip; without it the payload is fetched here, as
+ * before.
+ *
+ * @returns {Promise<{cards: any[], loans: Loan[], raw: any}>}
  * Loan: { id, cardId, title, author, type, format, expires, coverUrl, raw }
  */
-export async function sync(client, identity) {
-  const res = await client.requestOk('GET', '/chip/sync', { bearer: identity });
-  const data = res.json;
+export async function sync(client, identity, { reuse } = {}) {
+  const data = reuse ?? (await client.requestOk('GET', '/chip/sync', { bearer: identity })).json;
   const loans = (data.loans ?? []).map(normalizeLoan);
   return { cards: data.cards ?? [], loans, raw: data };
 }

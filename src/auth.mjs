@@ -48,6 +48,10 @@ export function sessionKey(cfg) {
  *   expiry checks, BEFORE the verify round trip — so callers can kick authed reads
  *   that depend only on the cached identity and let them overlap the verify. A
  *   synchronous throw is swallowed (the caller owns the returned promise's errors).
+ * @returns {Promise<{client: SentryClient, identity: string, cardId: string,
+ *   syncData?: object}>} syncData (#17) is the verified /chip/sync payload from
+ *   the cached-session path; absent on the fresh-mint path, which never syncs —
+ *   consumers must fall back to fetching (loans.sync does).
  */
 export async function authenticate(cfg) {
   const log = cfg.log ?? (() => {});
@@ -66,8 +70,12 @@ export async function authenticate(cfg) {
       // round trip so an authed read can hide under it. Swallow sync throws: the
       // caller owns the kick promise's error handling at its await site.
       try { cfg.onCachedSession?.(client, cached.identity, cached.cardId); } catch { }
-      const ok = await verify(client, cached.identity);
-      if (ok) return { client, identity: cached.identity, cardId: cached.cardId };
+      const syncData = await verifiedSync(client, cached.identity);
+      if (syncData) {
+        // #17: carry the verified payload out so a following loans sync in the
+        // same invocation can reuse it instead of re-fetching /chip/sync.
+        return { client, identity: cached.identity, cardId: cached.cardId, syncData };
+      }
       log('Cached session no longer valid; re-bootstrapping.');
     }
   }
@@ -156,12 +164,18 @@ async function remint(client, identity, chipId) {
   return res.json.identity;
 }
 
-async function verify(client, identity) {
+/**
+ * GET /chip/sync to prove a cached session is still accepted. Returns the
+ * verified payload (`result === 'synchronized'`) — #17 lets callers reuse it —
+ * or null when the session no longer verifies (boolean gate preserved:
+ * `!== null`).
+ */
+async function verifiedSync(client, identity) {
   try {
     const res = await client.request('GET', '/chip/sync', { bearer: identity });
-    return res.status === 200 && res.json?.result === 'synchronized';
+    return res.status === 200 && res.json?.result === 'synchronized' ? res.json : null;
   } catch {
-    return false;
+    return null;
   }
 }
 

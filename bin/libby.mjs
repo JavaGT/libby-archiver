@@ -416,7 +416,11 @@ the saved config on any command — see \`libby help\`.`);
     periodsP.catch(() => {});
   };
   const { authenticate } = await load.auth();
-  const { client, identity, cardId } = await authenticate(cfg);
+  // #17: on the cached-session path authenticate also returns the /chip/sync
+  // payload it just verified; the sync call sites below reuse it instead of
+  // paying a second identical fetch. Absent on the fresh-mint path — sync
+  // falls back to fetching.
+  const { client, identity, cardId, syncData } = await authenticate(cfg);
 
   if (command === 'auth') {
     console.log(`Authenticated. cardId=${cardId}`);
@@ -471,7 +475,8 @@ the saved config on any command — see \`libby help\`.`);
         // Show what's about to be returned — a typo'd id must not silently return a loan.
         const { sync } = await load.loans();
         const { returnTitle } = await load.checkout();
-        const { loans } = await sync(client, identity);
+        // #17: reuse the verified payload from this invocation's authenticate().
+        const { loans } = await sync(client, identity, { reuse: syncData });
         const loan = loans.find((l) => l.id === String(titleId));
         if (!loan) {
           console.error(`No loan with id ${titleId} on your shelf; nothing to return.`);
@@ -505,7 +510,9 @@ the saved config on any command — see \`libby help\`.`);
   }
 
   const { sync, audiobookLoans, readableLoans } = await load.loans();
-  const { loans } = await sync(client, identity);
+  // #17: reuse the verified payload from this invocation's authenticate()
+  // (list/archive); sync fetches when it is absent (fresh-mint path).
+  const { loans } = await sync(client, identity, { reuse: syncData });
   // Everything archivable: audiobooks (listen host) + ebooks/magazines (read host).
   const archivable = [...audiobookLoans(loans), ...readableLoans(loans)];
   const inFormat = (l) =>
