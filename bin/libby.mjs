@@ -393,7 +393,7 @@ the saved config on any command — see \`libby help\`.`);
     // the real error handling where this promise is awaited.
     formatLookup.catch(() => {});
   }
-  // #16: a default borrow (no --period) also needs the title's lending periods
+  // #15: a default borrow (no --period) also needs the title's lending periods
   // — an authed gateway GET that used to stack after the bootstrap. On the
   // cached-session path authenticate knows identity+cardId before its ~verify
   // round trip, so it hands them here and the GET hides under the verify.
@@ -452,7 +452,7 @@ the saved config on any command — see \`libby help\`.`);
           }
         }
         const { borrowTitle } = await load.checkout();
-        // #16: use the kicked result only if verify kept the identity the kick
+        // #15: use the kicked result only if verify kept the identity the kick
         // was made with; after a re-bootstrap that identity is dead, so discard
         // it and let borrowTitle re-GET with the fresh one (the old serial
         // behavior — same handler, same failure shape, if the re-GET fails).

@@ -1,4 +1,4 @@
-# T6-W1 — overlap default-borrow's periods GET under the cached-session verify (#16)
+# T6-W1 — overlap default-borrow's periods GET under the cached-session verify (#15)
 
 ## What / why
 
@@ -7,7 +7,7 @@
 the session bootstrap, and the borrow POST depends on its result, so the
 whole RTT sat on the critical path. Measured cold (session COPY, fake title
 id → 400, zero mutation): **917–987 ms per call** (fresh TLS handshake to
-the gateway host + RTT). Ticket #16 (Strong, performance-audit 0330 run
+the gateway host + RTT). Ticket #15 (Strong, performance-audit 0330 run
 2026-09-12).
 
 The cached-session path knows `identity` + `cardId` (after key + expiry
@@ -64,7 +64,7 @@ after all runs; the session copy is deleted after the run.
   (post-#13 gate).
 - `auth` cached-verify median 1665–1905 ms across probes (= existing
   evaluate-only #12; not admitted).
-- New evaluate-only #15: `return`'s unconditional loan sync costs one warm
+- New evaluate-only #16: `return`'s unconditional loan sync costs one warm
   `/chip/sync` RTT (~70–500 ms) purely for output fidelity (confirm title +
   friendly no-loan error) — removal changes user-visible output, so owner
   decision, not implemented.
@@ -75,20 +75,38 @@ after all runs; the session copy is deleted after the run.
   bootstrap is a chain of data-dependent mints); `avail` chunks only exceed
   one POST beyond 100 ids.
 
-## Hermetic-pinning gap (pre-agreed on #16)
+## Hermetic-pinning gap (pre-agreed on #15)
 
 The deny-net loader denies `auth.mjs` at import, so `authenticate` never
 runs under it and the kick is invisible to the existing pins; the sim
 (`test/helpers/overdrive-sim.mjs`) has no chip/auth surface. Hermetic
 kick-pinning needs sim auth-surface investment — deferred as an owner
-question on #16 (same shape as #14's net-sim funding question). This run's
+question on #15 (same shape as #14's net-sim funding question). This run's
 behavioral proof is the live A/B above + the byte-identical stderr pin.
 
 ## Verification
 
 - `node --test test/cli-lazy.test.mjs`: 8 pass / 0 fail; full `node --test`:
-  **93 pass / 0 fail** at a34bf31 (coordinator-run).
-- `git diff --stat` at the commit: only bin/libby.mjs, src/auth.mjs,
-  src/checkout.mjs.
-- Live A/B as above; hostile review dispatched on a34bf31 (GLM 5.3 Flash,
-  READ-ONLY) — verdict recorded on #16.
+  **93 pass / 0 fail** at a34bf31 and at 80e1fa3 (coordinator-run).
+- `git diff --stat` at each commit: only bin/libby.mjs, src/auth.mjs,
+  src/checkout.mjs (+ this report).
+- Live A/B as above, re-run after the review fix at 80e1fa3 (medians base
+  2855.3 / after 1975.8 → **879.5 ms saving**, stderr byte-identical, 0
+  unexpected): the happy path is unaffected by the identity-match guard.
+
+## Review
+
+- Round 1 (GLM 5.3 Flash, READ-ONLY, on a34bf31): **FIX-FIRST** — HIGH: on
+  the verify-fail path `authenticate` re-bootstraps and returns a fresh
+  identity while the borrow branch still awaited the kick made with the dead
+  cached identity (a 401 kick would fail the borrow where the old serial
+  path recovered); MINOR: the kick could fire for a missing title id (an
+  authed `GET .../loan/undefined/periods`); MINOR: the "byte-identical"
+  parity claim only holds for identical failure causes; MINOR (accepted,
+  per #15): no hermetic pin shipped.
+- Fixes at 80e1fa3: the borrow branch uses the kicked result only when the
+  returned identity matches the one the kick was made with
+  (`periodsIdentity === identity`), discarding it otherwise so
+  `borrowTitle` re-GETs serially — the exact old re-bootstrap behavior; the
+  hook gate now includes `!titleId`; comment wording corrected.
+- Round 2 (delta on 80e1fa3): verdict recorded on #15.

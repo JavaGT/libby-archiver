@@ -32,7 +32,7 @@ export async function getLoanPeriods(client, identity, cardId, titleId) {
  * @param {object} opts  { period, units, titleFormat, luckyDay, periods }
  *   period/units default to the title's preferred lending period.
  *   titleFormat is "audiobook" | "ebook" | "magazine" (from the search result type).
- *   periods (#16) is a pre-fetched getLoanPeriods result — supplied when the caller
+ *   periods (#15) is a pre-fetched getLoanPeriods result — supplied when the caller
  *   kicked the lookup earlier (overlapping the session verify); it skips the
  *   internal GET. Extraction semantics are identical either way.
  * @returns the loan object (checkoutId, expires, title, cardId, …)

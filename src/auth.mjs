@@ -44,7 +44,7 @@ export function sessionKey(cfg) {
  * @param {boolean} [cfg.insecureTLS]
  * @param {(msg:string)=>void} [cfg.log]
  * @param {(client: SentryClient, identity: string, cardId: string) => void} [cfg.onCachedSession]
- *   (#16) invoked once — only when a cached session passes the card/library key and
+ *   (#15) invoked once — only when a cached session passes the card/library key and
  *   expiry checks, BEFORE the verify round trip — so callers can kick authed reads
  *   that depend only on the cached identity and let them overlap the verify. A
  *   synchronous throw is swallowed (the caller owns the returned promise's errors).
@@ -62,7 +62,7 @@ export async function authenticate(cfg) {
       log('Cached session belongs to a different card/library; re-bootstrapping.');
     } else {
       log('Reusing cached session.');
-      // #16: give the caller the cached session's credentials before the verify
+      // #15: give the caller the cached session's credentials before the verify
       // round trip so an authed read can hide under it. Swallow sync throws: the
       // caller owns the kick promise's error handling at its await site.
       try { cfg.onCachedSession?.(client, cached.identity, cached.cardId); } catch { }
