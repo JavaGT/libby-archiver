@@ -17,6 +17,7 @@ export const CLIENT_VERSION = 'test.0.0';
 export class SentryError extends Error {
   constructor(message, opts = {}) {
     super(message);
+    this.status = opts.status;
     this.result = opts.result;
   }
 }
@@ -54,6 +55,11 @@ function record(method, path) {
   if (log) fs.appendFileSync(log, `${method} ${new URL(path, 'https://sim').pathname}\n`);
 }
 
+// SIM_SENTRY_SYNC_FAILS: reject the first N GET /chip/sync calls with 401
+// unauthorized — the shape a server-side-dead cached token produces — to pin
+// the #12 first-authed-call recovery.
+let syncFails = Number(process.env.SIM_SENTRY_SYNC_FAILS ?? 0);
+
 export class SentryClient {
   // eslint-disable-next-line no-unused-vars
   constructor(opts) { /* host/TLS options are irrelevant to the sim */ }
@@ -62,6 +68,10 @@ export class SentryClient {
     record(method, path);
     const { pathname } = new URL(path, 'https://sim');
     if (pathname === '/chip/sync') {
+      if (syncFails > 0) {
+        syncFails--;
+        return { status: 401, json: { result: 'unauthorized' } };
+      }
       return { status: 200, json: { result: 'synchronized', cards: [], loans: [SIM_LOAN] } };
     }
     if (pathname === '/chip' && method === 'POST') {
@@ -81,7 +91,10 @@ export class SentryClient {
   async requestOk(method, path, opts = {}) {
     const res = await this.request(method, path, opts);
     if (res.status < 200 || res.status >= 300) {
-      throw new SentryError(`${method} ${path} -> ${res.status}`, { status: res.status });
+      throw new SentryError(`${method} ${path} -> ${res.status}`, {
+        status: res.status,
+        result: res.json?.result,
+      });
     }
     return res;
   }

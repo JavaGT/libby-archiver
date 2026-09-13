@@ -46,22 +46,16 @@ test('loan filters partition by type', () => {
   assert.deepEqual(readableLoans(loans).map((l) => l.type), ['ebook', 'magazine']);
 });
 
-// #17: sync() must normalize a reused /chip/sync payload (the one authenticate
-// already fetched and verified) without touching the wire, and the no-reuse
-// fallback must fetch GET /chip/sync exactly once and return the same shape.
-test('sync() reuses a supplied payload without a request; fallback fetches (#17)', async () => {
+// #12: authenticate no longer pre-fetches /chip/sync, so sync() always fetches —
+// exactly once — and normalizes whatever the server returns.
+test('sync() fetches /chip/sync exactly once and normalizes the payload', async () => {
   const payload = {
     result: 'synchronized',
     cards: [{ id: 7 }],
-    loans: [{ id: 9, cardId: 7, title: 'Reused', type: { id: 'audiobook' } }],
+    loans: [{ id: 9, cardId: 7, title: 'Fetched', type: { id: 'audiobook' } }],
   };
-  const reused = await sync(
-    { requestOk: async () => { throw new Error('sync() must not fetch a reused payload'); } },
-    'identity',
-    { reuse: { identity: 'identity', json: payload } },
-  );
   let fetches = 0;
-  const fetched = await sync({
+  const r = await sync({
     requestOk: async (method, reqPath) => {
       fetches++;
       assert.equal(method, 'GET');
@@ -69,28 +63,11 @@ test('sync() reuses a supplied payload without a request; fallback fetches (#17)
       return { json: payload };
     },
   }, 'identity');
-  assert.equal(fetches, 1, 'exactly one fetch when no payload is supplied');
-  assert.deepEqual(reused, fetched, 'reuse and fetch must return the same shape');
-});
-
-// #17 review round 1: a reuse envelope is only trusted when its identity is
-// the one acting as bearer — a mismatched pair (identity-A payload, identity-B
-// bearer) must fall back to exactly one fetch and never surface the foreign
-// data.
-test('sync() refuses a reuse payload verified for a different identity (#17 review)', async () => {
-  const foreign = { cards: [{ id: 1 }], loans: [{ id: 1, cardId: 1, title: 'Foreign', type: { id: 'ebook' } }] };
-  const own = { cards: [{ id: 2 }], loans: [{ id: 2, cardId: 2, title: 'Own', type: { id: 'audiobook' } }] };
-  let fetches = 0;
-  const client = {
-    requestOk: async (method, reqPath) => {
-      fetches++;
-      assert.equal(method, 'GET');
-      assert.equal(reqPath, '/chip/sync');
-      return { json: own };
-    },
-  };
-  const r = await sync(client, 'identity-B', { reuse: { identity: 'identity-A', json: foreign } });
-  assert.equal(fetches, 1, 'mismatched reuse must fall back to exactly one fetch');
-  assert.equal(r.raw, own, 'the fresh fetch must back the result');
-  assert.equal(r.loans[0].title, 'Own', 'foreign loan data must never surface');
+  assert.equal(fetches, 1, 'exactly one fetch per sync() call');
+  assert.deepEqual(r, {
+    cards: payload.cards,
+    loans: [r.loans[0]],
+    raw: payload,
+  });
+  assert.equal(r.loans[0].title, 'Fetched');
 });

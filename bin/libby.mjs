@@ -394,17 +394,15 @@ the saved config on any command — see \`libby help\`.`);
     formatLookup.catch(() => {});
   }
   // #15: a default borrow (no --period) also needs the title's lending periods
-  // — an authed gateway GET that used to stack after the bootstrap. On the
-  // cached-session path authenticate knows identity+cardId before its ~verify
-  // round trip, so it hands them here and the GET hides under the verify.
-  // Same call borrowTitle would make; its result is passed via opts.periods.
-  // Lending periods are (cardId, titleId) properties, so a kicked result made
-  // with the cached identity stays valid if the verify fails and a fresh
-  // identity is minted for the same card — but only if the kick itself
-  // succeeded against a still-accepted token, so the branch uses it only when
-  // the returned identity still matches (review round 1); on mismatch the
-  // result is discarded and borrowTitle re-fetches serially, exactly the old
-  // re-bootstrap path. The branch owns the promise's errors at its await.
+  // — an authed gateway GET that used to stack after the bootstrap. authenticate
+  // hands over the cached identity at dispatch time, so the GET starts here and
+  // overlaps the catalog format lookup below. Same call borrowTitle would make;
+  // its result is passed via opts.periods. Lending periods are (cardId, titleId)
+  // properties, so a kicked result survives a first-authed-call re-bootstrap for
+  // the same card — but only if the kick itself succeeded against a
+  // still-accepted token, so the branch uses it only when the acting identity
+  // still matches; on mismatch the result is discarded and borrowTitle re-fetches
+  // serially. The branch owns the promise's errors at its await.
   let periodsP, periodsIdentity;
   cfg.onCachedSession = (client, identity, cardId) => {
     if (command !== 'borrow' || args.period || !titleId) return;
@@ -415,153 +413,170 @@ the saved config on any command — see \`libby help\`.`);
     })();
     periodsP.catch(() => {});
   };
-  const { authenticate } = await load.auth();
-  // #17: on the cached-session path authenticate also returns the /chip/sync
-  // payload it just verified; the sync call sites below reuse it instead of
-  // paying a second identical fetch. Absent on the fresh-mint path — sync
-  // falls back to fetching.
-  const { client, identity, cardId, syncData } = await authenticate(cfg);
+  const { authenticate, isAuthFailure } = await load.auth();
 
-  if (command === 'auth') {
-    console.log(`Authenticated. cardId=${cardId}`);
-    return;
-  }
-
-  // Account-mutating commands: borrow / return / hold / unhold. Each takes a title id.
-  if (['borrow', 'return', 'hold', 'unhold'].includes(command)) {
-    if (!titleId) {
-      console.error(`Usage: libby ${command} <id>   (find ids with \`libby search\`)`);
-      process.exit(2);
+  // #12: a cached session is served with zero server round trips; its liveness
+  // is proven by the command's first real authed call (for list/archive that is
+  // loans.sync's own /chip/sync fetch — still exactly one sync per invocation).
+  // If that call rejects the cached token, re-bootstrap once and retry; fresh
+  // sessions and every other error surface exactly as before.
+  const run = async ({ client, identity, cardId, fromCache }) => {
+    if (command === 'auth') {
+      const { decodeJwt } = await load.sentry();
+      const exp = decodeJwt(identity)?.exp;
+      console.log(
+        `Authenticated (cached session${exp ? `, valid until ${new Date(exp * 1000).toISOString().slice(0, 10)}` : ''}). cardId=${cardId}`,
+      );
+      return;
     }
-    try {
-      if (command === 'borrow') {
-        let period;
-        if (args.period) {
-          period = Number(args.period);
-          if (!Number.isInteger(period) || period <= 0) {
-            console.error('--period must be a positive whole number of days.');
-            process.exit(2);
+
+    // Account-mutating commands: borrow / return / hold / unhold. Each takes a title id.
+    if (['borrow', 'return', 'hold', 'unhold'].includes(command)) {
+      if (!titleId) {
+        console.error(`Usage: libby ${command} <id>   (find ids with \`libby search\`)`);
+        process.exit(2);
+      }
+      try {
+        if (command === 'borrow') {
+          let period;
+          if (args.period) {
+            period = Number(args.period);
+            if (!Number.isInteger(period) || period <= 0) {
+              console.error('--period must be a positive whole number of days.');
+              process.exit(2);
+            }
           }
-        }
-        // Detect the title's format from the catalog so an ebook is never borrowed
-        // with an audiobook title_format; --format only overrides.
-        let titleFormat = args.format && args.format !== 'all' ? args.format : undefined;
-        if (!titleFormat) {
-          try {
-            titleFormat = (await formatLookup).type;
-          } catch (e) {
-            console.error(`Could not look up the title's format (${e.message}).`);
-            console.error('Pass --format <audiobook|ebook|magazine> explicitly.');
+          // Detect the title's format from the catalog so an ebook is never borrowed
+          // with an audiobook title_format; --format only overrides.
+          let titleFormat = args.format && args.format !== 'all' ? args.format : undefined;
+          if (!titleFormat) {
+            try {
+              titleFormat = (await formatLookup).type;
+            } catch (e) {
+              console.error(`Could not look up the title's format (${e.message}).`);
+              console.error('Pass --format <audiobook|ebook|magazine> explicitly.');
+              process.exit(1);
+            }
+          }
+          const { borrowTitle } = await load.checkout();
+          // #15: use the kicked result only if the identity acting now is the one
+          // the kick was made with; after a first-authed-call re-bootstrap that
+          // kick's identity is dead, so discard it and let borrowTitle re-GET with
+          // the fresh one (the old serial behavior — same handler, same failure
+          // shape, if the re-GET fails).
+          const kickUsable = !!periodsP && periodsIdentity === identity;
+          const loan = await borrowTitle(client, identity, cardId, String(titleId), {
+            titleFormat,
+            luckyDay: !!args.luckyday,
+            period,
+            units: period ? 'days' : undefined,
+            ...(kickUsable ? { periods: await periodsP } : {}),
+          });
+          console.log(`Borrowed: ${loan.title}${loan.firstCreatorName ? ` — ${loan.firstCreatorName}` : ''}`);
+          console.log(`  due ${loan.expireDate ?? loan.expires ?? '?'}  (checkoutId ${loan.checkoutId})`);
+          console.log(`\nArchive it with:  libby archive --title ${titleId}`);
+        } else if (command === 'return') {
+          // Show what's about to be returned — a typo'd id must not silently return a loan.
+          const { sync } = await load.loans();
+          const { returnTitle } = await load.checkout();
+          const { loans } = await sync(client, identity);
+          const loan = loans.find((l) => l.id === String(titleId));
+          if (!loan) {
+            console.error(`No loan with id ${titleId} on your shelf; nothing to return.`);
             process.exit(1);
           }
+          const ok = await confirm(`Return "${loan.title}" (due ${loan.expires ?? '?'})?`, args);
+          if (!ok) return console.log('Aborted.');
+          await returnTitle(client, identity, cardId, String(titleId));
+          console.log(`Returned: ${loan.title}`);
+        } else if (command === 'hold') {
+          const { placeHold } = await load.checkout();
+          const hold = await placeHold(client, identity, cardId, String(titleId));
+          const pos = hold?.holdListPosition;
+          console.log(`Hold placed on title ${titleId}${pos ? ` (position ${pos})` : ''}.`);
+        } else {
+          const ok = await confirm(`Cancel hold on title ${titleId}?`, args);
+          if (!ok) return console.log('Aborted.');
+          const { cancelHold } = await load.checkout();
+          await cancelHold(client, identity, cardId, String(titleId));
+          console.log(`Hold cancelled on title ${titleId}.`);
         }
-        const { borrowTitle } = await load.checkout();
-        // #15: use the kicked result only if verify kept the identity the kick
-        // was made with; after a re-bootstrap that identity is dead, so discard
-        // it and let borrowTitle re-GET with the fresh one (the old serial
-        // behavior — same handler, same failure shape, if the re-GET fails).
-        const kickUsable = !!periodsP && periodsIdentity === identity;
-        const loan = await borrowTitle(client, identity, cardId, String(titleId), {
-          titleFormat,
-          luckyDay: !!args.luckyday,
-          period,
-          units: period ? 'days' : undefined,
-          ...(kickUsable ? { periods: await periodsP } : {}),
-        });
-        console.log(`Borrowed: ${loan.title}${loan.firstCreatorName ? ` — ${loan.firstCreatorName}` : ''}`);
-        console.log(`  due ${loan.expireDate ?? loan.expires ?? '?'}  (checkoutId ${loan.checkoutId})`);
-        console.log(`\nArchive it with:  libby archive --title ${titleId}`);
-      } else if (command === 'return') {
-        // Show what's about to be returned — a typo'd id must not silently return a loan.
-        const { sync } = await load.loans();
-        const { returnTitle } = await load.checkout();
-        // #17: reuse the verified payload from this invocation's authenticate().
-        const { loans } = await sync(client, identity, { reuse: syncData });
-        const loan = loans.find((l) => l.id === String(titleId));
-        if (!loan) {
-          console.error(`No loan with id ${titleId} on your shelf; nothing to return.`);
-          process.exit(1);
-        }
-        const ok = await confirm(`Return "${loan.title}" (due ${loan.expires ?? '?'})?`, args);
-        if (!ok) return console.log('Aborted.');
-        await returnTitle(client, identity, cardId, String(titleId));
-        console.log(`Returned: ${loan.title}`);
-      } else if (command === 'hold') {
-        const { placeHold } = await load.checkout();
-        const hold = await placeHold(client, identity, cardId, String(titleId));
-        const pos = hold?.holdListPosition;
-        console.log(`Hold placed on title ${titleId}${pos ? ` (position ${pos})` : ''}.`);
-      } else {
-        const ok = await confirm(`Cancel hold on title ${titleId}?`, args);
-        if (!ok) return console.log('Aborted.');
-        const { cancelHold } = await load.checkout();
-        await cancelHold(client, identity, cardId, String(titleId));
-        console.log(`Hold cancelled on title ${titleId}.`);
-      }
-    } catch (e) {
-      const { SentryError } = await load.sentry();
-      console.error(`${command} failed: ${e.message}`);
-      if (e instanceof SentryError && e.result === 'whoa') {
-        console.error('Rate-limited by OverDrive ("whoa"). Stop and retry later.');
-      }
-      process.exit(1);
-    }
-    return;
-  }
-
-  const { sync, audiobookLoans, readableLoans } = await load.loans();
-  // #17: reuse the verified payload from this invocation's authenticate()
-  // (list/archive); sync fetches when it is absent (fresh-mint path).
-  const { loans } = await sync(client, identity, { reuse: syncData });
-  // Everything archivable: audiobooks (listen host) + ebooks/magazines (read host).
-  const archivable = [...audiobookLoans(loans), ...readableLoans(loans)];
-  const inFormat = (l) =>
-    !args.format || args.format === 'all' ? true : l.type === args.format;
-
-  if (command === 'list') {
-    const shown = archivable.filter(inFormat);
-    if (!shown.length) return console.log('No loans to archive.');
-    console.log(`${shown.length} loan(s):`);
-    for (const b of shown) {
-      console.log(
-        `  ${b.id}  [${b.type}] ${b.title}${b.author ? ` — ${b.author}` : ''}  (due ${b.expires ?? '?'})`,
-      );
-    }
-    return;
-  }
-
-  if (command === 'archive') {
-    let targets;
-    if (args.title) targets = archivable.filter((b) => b.id === String(args.title));
-    else if (args.all) targets = archivable.filter(inFormat);
-    else {
-      console.error('Specify what to archive: --all, or --title <id>.');
-      console.error('See your loans with `libby list`.');
-      process.exit(2);
-    }
-    if (!targets.length) {
-      console.error('No matching loans to archive.');
-      process.exit(1);
-    }
-    const { archiveAudiobook } = await load.archive();
-    const { archiveReadable } = await load.archiveRead();
-    const ctx = { client, identity, cfg, log: cfg.log };
-    const done = [];
-    for (const loan of targets) {
-      try {
-        const archive = loan.type === 'audiobook' ? archiveAudiobook : archiveReadable;
-        done.push(await archive(ctx, loan, cfg.out));
       } catch (e) {
+        if (fromCache && isAuthFailure(e)) throw e; // the recovery below retries
         const { SentryError } = await load.sentry();
-        console.error(`FAILED "${loan.title}": ${e.message}`);
+        console.error(`${command} failed: ${e.message}`);
         if (e instanceof SentryError && e.result === 'whoa') {
           console.error('Rate-limited by OverDrive ("whoa"). Stop and retry later.');
-          process.exit(3);
+        }
+        process.exit(1);
+      }
+      return;
+    }
+
+    const { sync, audiobookLoans, readableLoans } = await load.loans();
+    // The invocation's only /chip/sync fetch (#17 budget) — and, on a cached
+    // session, the liveness proof (#12).
+    const { loans } = await sync(client, identity);
+    // Everything archivable: audiobooks (listen host) + ebooks/magazines (read host).
+    const archivable = [...audiobookLoans(loans), ...readableLoans(loans)];
+    const inFormat = (l) =>
+      !args.format || args.format === 'all' ? true : l.type === args.format;
+
+    if (command === 'list') {
+      const shown = archivable.filter(inFormat);
+      if (!shown.length) return console.log('No loans to archive.');
+      console.log(`${shown.length} loan(s):`);
+      for (const b of shown) {
+        console.log(
+          `  ${b.id}  [${b.type}] ${b.title}${b.author ? ` — ${b.author}` : ''}  (due ${b.expires ?? '?'})`,
+        );
+      }
+      return;
+    }
+
+    if (command === 'archive') {
+      let targets;
+      if (args.title) targets = archivable.filter((b) => b.id === String(args.title));
+      else if (args.all) targets = archivable.filter(inFormat);
+      else {
+        console.error('Specify what to archive: --all, or --title <id>.');
+        console.error('See your loans with `libby list`.');
+        process.exit(2);
+      }
+      if (!targets.length) {
+        console.error('No matching loans to archive.');
+        process.exit(1);
+      }
+      const { archiveAudiobook } = await load.archive();
+      const { archiveReadable } = await load.archiveRead();
+      const ctx = { client, identity, cfg, log: cfg.log };
+      const done = [];
+      for (const loan of targets) {
+        try {
+          const archive = loan.type === 'audiobook' ? archiveAudiobook : archiveReadable;
+          done.push(await archive(ctx, loan, cfg.out));
+        } catch (e) {
+          const { SentryError } = await load.sentry();
+          console.error(`FAILED "${loan.title}": ${e.message}`);
+          if (e instanceof SentryError && e.result === 'whoa') {
+            console.error('Rate-limited by OverDrive ("whoa"). Stop and retry later.');
+            process.exit(3);
+          }
         }
       }
+      console.log(`\nArchived ${done.length}/${targets.length} title(s) to ${cfg.out}`);
+      return;
     }
-    console.log(`\nArchived ${done.length}/${targets.length} title(s) to ${cfg.out}`);
-    return;
+  };
+
+  let session = await authenticate(cfg);
+  try {
+    await run(session);
+  } catch (e) {
+    if (!session.fromCache || !isAuthFailure(e)) throw e;
+    console.error('Cached session no longer valid; re-bootstrapping.');
+    session = await authenticate(cfg, { force: true });
+    await run(session);
   }
 }
 

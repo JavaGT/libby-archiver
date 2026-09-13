@@ -20,7 +20,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { SentryClient, decodeJwt, CLIENT_VERSION, READ_HOST } from './sentry.mjs';
+import { SentryClient, SentryError, decodeJwt, CLIENT_VERSION, READ_HOST } from './sentry.mjs';
 import { writeFileAtomic } from './util.mjs';
 
 const mintQuery = () => `c=d%3A${CLIENT_VERSION}&s=0`;
@@ -45,22 +45,27 @@ export function sessionKey(cfg) {
  * @param {(msg:string)=>void} [cfg.log]
  * @param {(client: SentryClient, identity: string, cardId: string) => void} [cfg.onCachedSession]
  *   (#15) invoked once — only when a cached session passes the card/library key and
- *   expiry checks, BEFORE the verify round trip — so callers can kick authed reads
- *   that depend only on the cached identity and let them overlap the verify. A
- *   synchronous throw is swallowed (the caller owns the returned promise's errors).
+ *   expiry checks — so callers can kick authed reads concurrently with the rest of
+ *   the dispatch. A synchronous throw is swallowed (the caller owns the returned
+ *   promise's errors).
+ * @param {boolean} [opts.force]  skip the cache entirely and mint fresh
+ *   (the re-bootstrap path of the first-authed-call recovery).
  * @returns {Promise<{client: SentryClient, identity: string, cardId: string,
- *   syncData?: {identity: string, json: object}}>} syncData (#17) is the
- *   /chip/sync payload verified on the cached-session path, enveloped with the
- *   identity it was verified against (review round 1) so consumers can refuse
- *   a mismatched pair; absent on the fresh-mint path, which never syncs —
- *   consumers must fall back to fetching (loans.sync does).
+ *   fromCache: boolean}>} fromCache (#12) marks a session served from the cache
+ *   without a server round trip: its liveness is proven by the command's first
+ *   real authed call, and a failure there is recovered by the caller
+ *   (isAuthFailure + a forced re-authenticate).
  */
-export async function authenticate(cfg) {
+export async function authenticate(cfg, { force = false } = {}) {
   const log = cfg.log ?? (() => {});
   const client = new SentryClient({ host: READ_HOST, insecureTLS: cfg.insecureTLS });
 
   // 1. Reuse a cached session if it belongs to this card/library and is still valid.
-  const cached = loadSession(cfg.sessionFile);
+  //    No server round trip here (#12): the local expiry check is the gate, and the
+  //    command's first authed call is the liveness proof — a dead session is caught
+  //    there (isAuthFailure) and re-bootstrapped once instead of paying a verify
+  //    round trip on every invocation.
+  const cached = force ? null : loadSession(cfg.sessionFile);
   if (cached && cached.identity && !isExpired(cached.identity)) {
     if (!cached.key) {
       log('Cached session predates per-card keying; re-bootstrapping.');
@@ -68,25 +73,11 @@ export async function authenticate(cfg) {
       log('Cached session belongs to a different card/library; re-bootstrapping.');
     } else {
       log('Reusing cached session.');
-      // #15: give the caller the cached session's credentials before the verify
-      // round trip so an authed read can hide under it. Swallow sync throws: the
+      // #15: hand the caller the cached session's credentials at dispatch time so
+      // independent authed reads can run concurrently. Swallow sync throws: the
       // caller owns the kick promise's error handling at its await site.
       try { cfg.onCachedSession?.(client, cached.identity, cached.cardId); } catch { }
-      const verified = await verifiedSync(client, cached.identity);
-      if (verified) {
-        // #17: carry the verified payload out so a following loans sync in the
-        // same invocation can reuse it instead of re-fetching /chip/sync.
-        // Review round 1: the payload travels with the identity it was
-        // verified against, so consumers can refuse a mismatched pair
-        // (identity-A data must never surface under identity-B's bearer).
-        return {
-          client,
-          identity: cached.identity,
-          cardId: cached.cardId,
-          syncData: { identity: cached.identity, json: verified },
-        };
-      }
-      log('Cached session no longer valid; re-bootstrapping.');
+      return { client, identity: cached.identity, cardId: cached.cardId, fromCache: true };
     }
   }
 
@@ -119,7 +110,7 @@ export async function authenticate(cfg) {
     key: sessionKey(cfg),
     savedAt: Date.now(),
   });
-  return { client, identity, cardId };
+  return { client, identity, cardId, fromCache: false };
 }
 
 async function mintChip(client) {
@@ -175,18 +166,14 @@ async function remint(client, identity, chipId) {
 }
 
 /**
- * GET /chip/sync to prove a cached session is still accepted. Returns the
- * verified payload (`result === 'synchronized'`) — #17 lets callers reuse it —
- * or null when the session no longer verifies (boolean gate preserved:
- * `!== null`).
+ * True when a failure is the command's first authed call rejecting the cached
+ * token (#12): the shape a dead (revoked server-side) session produces, and the
+ * only kind of failure a forced re-authenticate can fix. `credentials_rejected`
+ * deliberately does NOT qualify — a card the server refuses stays refused, and
+ * the raw error is the honest answer.
  */
-async function verifiedSync(client, identity) {
-  try {
-    const res = await client.request('GET', '/chip/sync', { bearer: identity });
-    return res.status === 200 && res.json?.result === 'synchronized' ? res.json : null;
-  } catch {
-    return null;
-  }
+export function isAuthFailure(e) {
+  return e instanceof SentryError && (e.status === 401 || e.result === 'missing_chip');
 }
 
 function isExpired(identity, skewSeconds = 300) {

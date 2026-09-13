@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveILS, sessionKey } from '../src/auth.mjs';
+import { resolveILS, sessionKey, isAuthFailure } from '../src/auth.mjs';
+import { SentryError } from '../src/sentry.mjs';
 
 const clientFor = (json) => ({
   requestOk: async (method, path) => {
@@ -41,4 +42,15 @@ test('session keys separate cards and libraries so a cache never crosses account
     sessionKey({ library: 'lib-a', cardNumber: '12345' }),
     sessionKey({ library: 'lib-b', cardNumber: '12345' }),
   );
+});
+
+// #12: exactly the failures a server-side-dead cached token produces are
+// recoverable by a re-bootstrap; credential rejections and whoa are not.
+test('isAuthFailure matches only dead-token shapes', () => {
+  assert.equal(isAuthFailure(new SentryError('401', { status: 401 })), true);
+  assert.equal(isAuthFailure(new SentryError('403', { status: 403, result: 'missing_chip' })), true);
+  assert.equal(isAuthFailure(new SentryError('401', { status: 401, result: 'credentials_rejected' })), true);
+  assert.equal(isAuthFailure(new SentryError('403', { status: 403, result: 'whoa' })), false);
+  assert.equal(isAuthFailure(new SentryError('500', { status: 500 })), false);
+  assert.equal(isAuthFailure(new Error('plain')), false);
 });
