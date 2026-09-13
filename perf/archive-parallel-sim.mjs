@@ -1,21 +1,23 @@
 // Cross-title parallelism measurement for `libby archive --all` (#14).
-//   node perf/archive-parallel-sim.mjs [--titles 6] [--parts 12] [--part-kb 200]
-//                                      [--latency 150] [--runs 3]
+//   node perf/archive-parallel-sim.mjs [--kind audio|read] [--titles 6] [--parts 12]
+//                                      [--part-kb 200] [--pages 20] [--latency 150]
+//                                      [--runs 3]
 //
 // The evaluation question in #14 is whether archiving titles in a bounded-
 // concurrent loop (mapLimit(targets, 2|3)) instead of the CLI's strict serial
 // for…of loop is worth building. This harness measures exactly that: the REAL
-// archiveAudiobook orchestrator (src/archive.mjs) driven over N loans against a
-// latency-injected listen host + Thunder catalog — same fixture surface as
-// test/e2e.test.mjs (client stubbed at the credential boundary, everything past
-// it is unmodified app code: CookieJar handshake, openbook decode, part
-// downloads with per-title 3-wide pooling, thunder/cover side trips, manifest).
+// orchestrator (archiveAudiobook, or archiveReadable with --kind read) driven
+// over N loans against a latency-injected listen/read host + Thunder catalog —
+// same fixture surface as test/e2e.test.mjs (client stubbed at the credential
+// boundary, everything past it is unmodified app code: CookieJar handshake,
+// openbook decode, per-title bounded pooling, side trips, manifest).
 //
 // Fresh output dir per run: downloadPart's resume-skip would otherwise turn
 // runs 2+ into no-ops. Serial mode reproduces the production loop shape
 // (for…of await); the concurrent modes are the candidate mapLimit(k) loop.
-// Connection-count deltas on the listen host quantify the socket multiplication
-// that feeds the OverDrive rate-limit ("whoa") risk discussion.
+// Connection-count deltas quantify the socket multiplication that feeds the
+// OverDrive rate-limit ("whoa") risk discussion. Results land in
+// results-archive-parallel.json (audio) / …-read.json (read).
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -23,15 +25,22 @@ import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { pathToFileURL } from 'node:url';
 import { deterministicBytes, selfSignedCert } from '../test/helpers/sim-server.mjs';
-import { startServer, eDataPage } from '../test/helpers/overdrive-sim.mjs';
+import { startServer, eDataPage, cfc1Page } from '../test/helpers/overdrive-sim.mjs';
 
 const arg = (name, dflt) => {
   const i = process.argv.indexOf(`--${name}`);
   return i >= 0 ? Number(process.argv[i + 1]) : dflt;
 };
+const argStr = (name, dflt) => {
+  const i = process.argv.indexOf(`--${name}`);
+  return i >= 0 ? process.argv[i + 1] : dflt;
+};
+const KIND = argStr('kind', 'audio'); // 'audio' -> archiveAudiobook, 'read' -> archiveReadable
 const TITLES = arg('titles', 6);
-const PARTS = arg('parts', 12);
-const PART_KB = arg('part-kb', 200);
+const PARTS = KIND === 'read' ? 0 : arg('parts', 12);
+const PART_KB = KIND === 'read' ? 0 : arg('part-kb', 200);
+const PAGES = KIND === 'read' ? arg('pages', 20) : 0;
+const ASSETS = KIND === 'read' ? Math.max(2, Math.floor(PAGES / 2)) : 0;
 const LATENCY = arg('latency', 150);
 const RUNS = arg('runs', 3);
 
@@ -39,9 +48,30 @@ const med = (xs) => [...xs].sort((a, b) => a - b)[(xs.length - 1) >> 1];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const think = (res) => sleep(LATENCY).then(() => res);
 
-// A P-part audiobook openbook, shaped like the e2e fixture but parameterized.
+// A P-part audiobook or P-page readable openbook, shaped like the e2e fixtures
+// but parameterized.
+const partBytes = PART_KB * 1024;
 function perfOpenbook() {
-  const partBytes = PART_KB * 1024;
+  if (KIND === 'read') {
+    const pages = Array.from({ length: PAGES }, (_, i) => ({
+      path: `pages/${i + 1}.xhtml`,
+      '-odread-spine-position': i,
+      '-odread-original-path': `pages/${i + 1}.xhtml`,
+      'rendition-layout': 'pre-paginated',
+      'rendition-viewport': { width: 800, height: 1200 },
+    }));
+    return {
+      b: {
+        title: { main: 'Perf Title' },
+        description: 'Cross-title parallelism fixture.',
+        language: ['en'],
+        creator: [{ name: 'A. Author', role: 'author' }, { name: 'Perf Press', role: 'pbl' }],
+        spine: pages,
+        '-odread-cmpt-params': [],
+        nav: { toc: [{ title: 'Front', path: 'pages/1.xhtml' }] },
+      },
+    };
+  }
   const parts = Array.from({ length: PARTS }, (_, i) => ({
     path: `res/part${i + 1}.mp3`,
     '-odread-spine-position': i,
@@ -71,10 +101,43 @@ if (!cert) {
 
 const openbook = perfOpenbook();
 const playerPage = (req) => eDataPage(openbook, `https://${req.headers.host}/`);
-const partBody = deterministicBytes(PART_KB * 1024);
+const partBody = KIND === 'read' ? null : deterministicBytes(partBytes);
+const assetBody = (k) => deterministicBytes(2048 + k * 31);
+const pageBody = (n) =>
+  `<svg viewBox="0 0 800 1200">` +
+  `<image href="../assets/urlHash-${(n % ASSETS) + 1}.jpg" width="800"/>` +
+  `<text>page ${n}</text></svg>`;
 
-// Listen host: message handshake + player page on /, CDN-style part redirects.
-const listen = await startServer(cert, [
+// Media host: message handshake + player page on /, then per-kind payloads —
+// CDN-style part redirects (audio) or cfc1 pages + assets (read).
+const listen = KIND === 'read'
+  ? await startServer(cert, [
+      {
+        match: (p) => p === '/',
+        handler: ({ req, res }) => {
+          res.setHeader('set-cookie', 'session=perf; Path=/');
+          res.writeHead(200, { 'content-type': 'text/html' });
+          res.end(playerPage(req));
+        },
+      },
+      {
+        match: (p) => /^\/pages\/\d+\.xhtml$/.test(p),
+        handler: ({ res, url }) => think(res).then(() => {
+          res.writeHead(200, { 'content-type': 'text/html' });
+          res.end(cfc1Page(pageBody(Number(url.pathname.match(/(\d+)\.xhtml/)[1]))));
+        }),
+      },
+      {
+        match: (p) => /^\/assets\/urlHash-\d+\.jpg$/.test(p),
+        handler: ({ res, url }) => think(res).then(() => {
+          const k = Number(url.pathname.match(/urlHash-(\d+)/)[1]);
+          const body = assetBody(k);
+          res.writeHead(200, { 'content-type': 'image/jpeg', 'content-length': body.length });
+          res.end(body);
+        }),
+      },
+    ])
+  : await startServer(cert, [
   {
     match: (p) => p === '/',
     handler: ({ req, res }) => {
@@ -136,15 +199,18 @@ const catalog = await startServer(cert, [
 
 // The catalog host constant is read at module-load time; set it first.
 process.env.LIBBY_THUNDER_HOST = catalog.host;
-const { archiveAudiobook } = await import(new URL('../src/archive.mjs', import.meta.url).href);
-const { mapLimit } = await import(new URL('../src/pool.mjs', import.meta.url).href);
+const srcUrl = new URL('../src/', import.meta.url);
+const { mapLimit } = await import(new URL('pool.mjs', srcUrl).href);
+const archive = KIND === 'read'
+  ? (await import(new URL('archive-read.mjs', srcUrl).href)).archiveReadable
+  : (await import(new URL('archive.mjs', srcUrl).href)).archiveAudiobook;
 
 const loans = Array.from({ length: TITLES }, (_, i) => ({
   id: String(900 + i),
   cardId: '77',
   title: `Perf Title ${i + 1}`,
   author: 'A. Author',
-  type: 'audiobook',
+  type: KIND === 'read' ? 'magazine' : 'audiobook',
   expires: '2026-12-31',
   raw: { perf: i },
 }));
@@ -170,9 +236,9 @@ async function timedRun(k) {
   try {
     // Serial = the production loop shape (bin/libby.mjs); k>1 = the candidate loop.
     if (k > 1) {
-      await mapLimit(targets, k, ({ ctx, loan }) => archiveAudiobook(ctx, loan, out));
+      await mapLimit(targets, k, ({ ctx, loan }) => archive(ctx, loan, out));
     } else {
-      for (const { ctx, loan } of targets) await archiveAudiobook(ctx, loan, out);
+      for (const { ctx, loan } of targets) await archive(ctx, loan, out);
     }
     const wallMs = performance.now() - t0;
     // sanity: every title claimed a folder with a manifest
@@ -190,7 +256,7 @@ async function timedRun(k) {
 
 const out = {
   date: new Date().toISOString(),
-  config: { titles: TITLES, parts: PARTS, partKb: PART_KB, latencyMs: LATENCY, runs: RUNS },
+  config: { kind: KIND, titles: TITLES, parts: PARTS || undefined, partKb: PART_KB || undefined, pages: PAGES || undefined, latencyMs: LATENCY, runs: RUNS },
   modes: {},
 };
 
@@ -215,7 +281,7 @@ for (const [name, m] of Object.entries(out.modes)) {
 }
 
 fs.writeFileSync(
-  new URL('./results-archive-parallel.json', import.meta.url),
+  new URL(`./results-archive-parallel${KIND === 'read' ? '-read' : ''}.json`, import.meta.url),
   JSON.stringify(out, null, 2) + '\n',
 );
 console.log(JSON.stringify(out, null, 2));

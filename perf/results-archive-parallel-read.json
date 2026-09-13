@@ -1,0 +1,69 @@
+{
+  "date": "2026-09-13T02:15:27.246Z",
+  "config": {
+    "kind": "read",
+    "titles": 6,
+    "pages": 20,
+    "latencyMs": 150,
+    "runs": 3
+  },
+  "modes": {
+    "serial": {
+      "medianMs": 7857,
+      "runs": [
+        {
+          "wallMs": 7588,
+          "listenConnections": 6
+        },
+        {
+          "wallMs": 7857,
+          "listenConnections": 6
+        },
+        {
+          "wallMs": 8264,
+          "listenConnections": 6
+        }
+      ],
+      "medianListenConnections": 6,
+      "speedupVsSerial": 1
+    },
+    "mapLimit2": {
+      "medianMs": 3805,
+      "runs": [
+        {
+          "wallMs": 3985,
+          "listenConnections": 16
+        },
+        {
+          "wallMs": 3801,
+          "listenConnections": 18
+        },
+        {
+          "wallMs": 3805,
+          "listenConnections": 18
+        }
+      ],
+      "medianListenConnections": 18,
+      "speedupVsSerial": 2.06
+    },
+    "mapLimit3": {
+      "medianMs": 3627,
+      "runs": [
+        {
+          "wallMs": 3627,
+          "listenConnections": 12
+        },
+        {
+          "wallMs": 3660,
+          "listenConnections": 12
+        },
+        {
+          "wallMs": 3610,
+          "listenConnections": 12
+        }
+      ],
+      "medianListenConnections": 12,
+      "speedupVsSerial": 2.17
+    }
+  }
+}
