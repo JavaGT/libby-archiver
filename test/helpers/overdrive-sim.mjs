@@ -125,7 +125,8 @@ export function pageBody(n) {
   );
 }
 
-function startServer(cert, matchers) {
+/** Start one TLS host serving `matchers`; exported for perf harnesses (#14). */
+export function startServer(cert, matchers) {
   const state = { connections: 0, playerHadCookie: false };
   const server = https.createServer(cert, (req, res) => {
     const url = new URL(req.url, 'https://localhost');
